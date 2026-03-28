@@ -117,6 +117,8 @@ export function createVisualization(
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.1;
+  controls.autoRotate = true;
+  controls.autoRotateSpeed = 0.4;
 
   // Subtle ambient + directional light so spheres have some shading
   scene.add(new THREE.AmbientLight(0xffffff, 0.6));
