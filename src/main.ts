@@ -24,9 +24,12 @@ let net: NeuralNetwork;
 let viz: ReturnType<typeof createVisualization>;
 let charts: ReadoutCharts;
 let step = 0;
+let lastPulseTime = 0;
 
 const params = {
   playing: true,
+  pulse: false,
+  bpm: 120,
   ticksPerFrame: 1,
   flashDecay: 0.85,
   numNeurons: DEFAULT_NUM_NEURONS,
@@ -92,6 +95,8 @@ function buildGUI() {
 
   const sim = gui.addFolder("Simulation");
   sim.add(params, "playing").name("Play");
+  sim.add(params, "pulse").name("Pulse");
+  sim.add(params, "bpm", 30, 300, 1).name("BPM");
   sim.add(params, "ticksPerFrame", 1, 20, 1).name("Ticks / frame");
   sim.add(params, "flashDecay", 0.5, 0.99, 0.01).name("Flash decay");
 
@@ -120,6 +125,19 @@ function animate() {
   if (params.playing) {
     for (let t = 0; t < params.ticksPerFrame; t++) {
       net.tick(step++);
+    }
+
+    if (params.pulse) {
+      const now = performance.now();
+      const interval = 60_000 / params.bpm;
+      if (now - lastPulseTime >= interval) {
+        lastPulseTime = now;
+        if (params.numModules > 1 && net.moduleAssignments) {
+          net.manualActivateMostWeightedPerModule(1.0);
+        } else {
+          net.manualActivateMostWeighted(1.0);
+        }
+      }
     }
   }
 
