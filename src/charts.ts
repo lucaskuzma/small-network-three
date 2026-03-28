@@ -2,15 +2,14 @@ import * as THREE from "three";
 import type { NeuralNetwork } from "./network.ts";
 
 // ---------------------------------------------------------------------------
-// Constants (pixel units)
+// Constants (pixel units, modular scale: 2,4,8,16,24,32,48,72,96,128,192,256)
 // ---------------------------------------------------------------------------
 
-const CHART_WIDTH = 250;
-const CHART_HEIGHT = 50;
+const CHART_WIDTH = 256;
+const CHART_HEIGHT = 48;
 const CHART_GAP = 8;
 const BUFFER_LEN = 300;
-const LEFT_MARGIN = 15;
-const TOP_MARGIN = 15;
+const MARGIN = 16;
 
 const TRACE_COLORS = [
   0x4fc3f7, // light blue
@@ -29,13 +28,18 @@ interface TraceData {
   positions: Float32Array;
 }
 
+/** One neuron→readout connection: which neuron, which readout it connects to */
+interface ConnectorInfo {
+  neuronIdx: number;
+  readout: number;
+  line: THREE.Line;
+}
+
 export interface ReadoutCharts {
   scene: THREE.Scene;
   camera: THREE.OrthographicCamera;
-  connectorLines: THREE.Line[];
-  readoutNeurons: number[];
+  connectors: ConnectorInfo[];
   traces: TraceData[][];
-  /** Y-base (top edge) per readout in local group coords */
   yBases: number[];
   group: THREE.Group;
   resize(w: number, h: number): void;
@@ -43,33 +47,29 @@ export interface ReadoutCharts {
 }
 
 // ---------------------------------------------------------------------------
-// Find representative neuron per readout
+// Find ALL neurons with non-zero output weights per readout
 // ---------------------------------------------------------------------------
 
-function findReadoutNeurons(net: NeuralNetwork): number[] {
+function findAllReadoutNeurons(net: NeuralNetwork): { neuronIdx: number; readout: number }[] {
   const N = net.state.numNeurons;
   const numReadouts = net.state.numReadouts;
   const nPer = net.state.nOutputsPerReadout;
   const numOut = net.state.numOutputs;
   const ow = net.state.outputWeights;
 
-  const result: number[] = [];
+  const result: { neuronIdx: number; readout: number }[] = [];
   for (let r = 0; r < numReadouts; r++) {
     const colStart = r * nPer;
     const colEnd = colStart + nPer;
-    let bestIdx = 0;
-    let bestSum = -Infinity;
     for (let i = 0; i < N; i++) {
       let sum = 0;
       for (let c = colStart; c < colEnd; c++) {
         sum += Math.abs(ow[i * numOut + c]);
       }
-      if (sum > bestSum) {
-        bestSum = sum;
-        bestIdx = i;
+      if (sum > 0) {
+        result.push({ neuronIdx: i, readout: r });
       }
     }
-    result.push(bestIdx);
   }
   return result;
 }
@@ -78,21 +78,17 @@ function findReadoutNeurons(net: NeuralNetwork): number[] {
 // Create
 // ---------------------------------------------------------------------------
 
-export function createReadoutCharts(
-  net: NeuralNetwork,
-): ReadoutCharts {
+export function createReadoutCharts(net: NeuralNetwork): ReadoutCharts {
   const numReadouts = net.state.numReadouts;
   const nPer = net.state.nOutputsPerReadout;
 
-  // Separate scene + orthographic camera for screen-space HUD
   const hudScene = new THREE.Scene();
   const w = window.innerWidth;
   const h = window.innerHeight;
   const ortho = new THREE.OrthographicCamera(0, w, h, 0, -1, 1);
 
-  // Group anchored at top-left; charts grow downward (negative local Y)
   const group = new THREE.Group();
-  group.position.set(LEFT_MARGIN, h - TOP_MARGIN, 0);
+  group.position.set(MARGIN, h - MARGIN, 0);
   hudScene.add(group);
 
   const traces: TraceData[][] = [];
@@ -127,7 +123,7 @@ export function createReadoutCharts(
       const positions = new Float32Array(BUFFER_LEN * 3);
       for (let p = 0; p < BUFFER_LEN; p++) {
         positions[p * 3] = (p / (BUFFER_LEN - 1)) * CHART_WIDTH;
-        positions[p * 3 + 1] = yBase - CHART_HEIGHT; // bottom = value 0
+        positions[p * 3 + 1] = yBase - CHART_HEIGHT;
         positions[p * 3 + 2] = 0;
       }
       const geo = new THREE.BufferGeometry();
@@ -147,12 +143,11 @@ export function createReadoutCharts(
     traces.push(readoutTraces);
   }
 
-  // Representative neurons
-  const readoutNeurons = findReadoutNeurons(net);
+  // All readout neurons with non-zero output weights
+  const neuronReadoutPairs = findAllReadoutNeurons(net);
 
-  // Connector lines live in the HUD scene (screen-space endpoints)
-  const connectorLines: THREE.Line[] = [];
-  for (let r = 0; r < numReadouts; r++) {
+  const connectors: ConnectorInfo[] = [];
+  for (const { neuronIdx, readout } of neuronReadoutPairs) {
     const geo = new THREE.BufferGeometry();
     const pos = new Float32Array(6);
     const attr = new THREE.BufferAttribute(pos, 3);
@@ -161,11 +156,11 @@ export function createReadoutCharts(
     const mat = new THREE.LineBasicMaterial({
       color: 0x666666,
       transparent: true,
-      opacity: 0.3,
+      opacity: 0.08,
     });
     const line = new THREE.Line(geo, mat);
-    hudScene.add(line); // in the HUD scene, not in the group
-    connectorLines.push(line);
+    hudScene.add(line);
+    connectors.push({ neuronIdx, readout, line });
     disposables.push({ geo, mat });
   }
 
@@ -173,14 +168,13 @@ export function createReadoutCharts(
     ortho.right = newW;
     ortho.top = newH;
     ortho.updateProjectionMatrix();
-    group.position.set(LEFT_MARGIN, newH - TOP_MARGIN, 0);
+    group.position.set(MARGIN, newH - MARGIN, 0);
   }
 
   return {
     scene: hudScene,
     camera: ortho,
-    connectorLines,
-    readoutNeurons,
+    connectors,
     traces,
     yBases,
     group,
@@ -210,10 +204,8 @@ export function updateReadoutCharts(
   const numReadouts = net.state.numReadouts;
   const nPer = net.state.nOutputsPerReadout;
   const outputs = net.state.outputs;
-  const w = charts.camera.right;
   const h = charts.camera.top;
 
-  // Push new output values only when simulation is running
   if (pushData) {
     for (let r = 0; r < numReadouts; r++) {
       const yBase = charts.yBases[r];
@@ -232,10 +224,10 @@ export function updateReadoutCharts(
     }
   }
 
-  // Always update connector lines (they follow camera movement)
-  for (let r = 0; r < numReadouts; r++) {
-    const neuronIdx = charts.readoutNeurons[r];
-    const yBase = charts.yBases[r];
+  // Update all connector lines
+  const w = charts.camera.right;
+  for (const { neuronIdx, readout, line } of charts.connectors) {
+    const yBase = charts.yBases[readout];
 
     _projected.set(
       nodePositions[neuronIdx * 3],
@@ -247,10 +239,11 @@ export function updateReadoutCharts(
     const sx = (_projected.x + 1) / 2 * w;
     const sy = (_projected.y + 1) / 2 * h;
 
-    const anchorX = LEFT_MARGIN;
-    const anchorY = (h - TOP_MARGIN) + yBase - CHART_HEIGHT / 2;
+    // Anchor at right edge of chart, vertical midpoint
+    const anchorX = MARGIN + CHART_WIDTH;
+    const anchorY = (h - MARGIN) + yBase - CHART_HEIGHT / 2;
 
-    const attr = charts.connectorLines[r].geometry.getAttribute("position") as THREE.BufferAttribute;
+    const attr = line.geometry.getAttribute("position") as THREE.BufferAttribute;
     const pos = attr.array as Float32Array;
 
     pos[0] = sx;
