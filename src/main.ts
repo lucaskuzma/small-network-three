@@ -14,6 +14,7 @@ import {
   DEFAULT_REFRACTION_VARIATION,
 } from "./network.ts";
 import { createVisualization, updateColors } from "./visualization.ts";
+import { createReadoutCharts, updateReadoutCharts, type ReadoutCharts } from "./charts.ts";
 
 // ---------------------------------------------------------------------------
 // State
@@ -21,6 +22,7 @@ import { createVisualization, updateColors } from "./visualization.ts";
 
 let net: NeuralNetwork;
 let viz: ReturnType<typeof createVisualization>;
+let charts: ReadoutCharts;
 let step = 0;
 
 const params = {
@@ -45,6 +47,7 @@ const params = {
 // ---------------------------------------------------------------------------
 
 function rebuild() {
+  if (charts) charts.dispose();
   if (viz) viz.dispose();
 
   net = new NeuralNetwork({
@@ -77,6 +80,7 @@ function rebuild() {
   step = 0;
 
   viz = createVisualization(net, document.body, params.edgeWeightThreshold);
+  charts = createReadoutCharts(viz.scene, net, viz.nodePositions);
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +124,9 @@ function animate() {
   }
 
   updateColors(viz, net, params.flashDecay);
+  if (params.playing) {
+    updateReadoutCharts(charts, net, viz.camera, viz.nodePositions);
+  }
   viz.controls.update();
   viz.renderer.render(viz.scene, viz.camera);
 }
