@@ -1,5 +1,9 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import createGraph from "ngraph.graph";
 import createLayout from "ngraph.forcelayout";
 import type { NeuralNetwork } from "./network.ts";
@@ -8,22 +12,30 @@ import type { NeuralNetwork } from "./network.ts";
 // Types
 // ---------------------------------------------------------------------------
 
+const CURVE_SEGMENTS = 8;
+const CURVE_AMOUNT = 0.3; // control point offset as fraction of edge length
+
 export interface NetworkVisualization {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
-  nodePositions: Float32Array; // 3 floats per neuron (x, y, z)
+  composer: EffectComposer;
+  bloomPass: UnrealBloomPass;
+  nodePositions: Float32Array;
   nodeMesh: THREE.InstancedMesh;
+  flatNodes: boolean;
   edgeLineSegments: THREE.LineSegments;
-  /** Per-neuron magenta flash channel, decays each frame. */
+  /** Number of line segment pairs per edge curve */
+  edgeSegsPerEdge: number;
   fireFlash: Float64Array;
-  /** Per-edge: source neuron index */
   edgeSources: Uint32Array;
-  /** Per-edge: absolute weight (used as Y channel) */
   edgeWeights: Float32Array;
-  /** Per-edge activation flash, decays each frame */
   edgeFlash: Float64Array;
+  /** Call each frame to billboard circle nodes. No-op when using spheres. */
+  updateNodeBillboard(): void;
+  /** Toggle between flat circles and 3D spheres. */
+  setFlatNodes(flat: boolean): void;
   resize(): void;
   dispose(): void;
 }
@@ -87,6 +99,53 @@ function computeLayout(
 }
 
 // ---------------------------------------------------------------------------
+// Node mesh helpers
+// ---------------------------------------------------------------------------
+
+const _dummy = new THREE.Object3D();
+
+function createNodeMesh(
+  N: number,
+  positions: Float32Array,
+  flat: boolean,
+): { mesh: THREE.InstancedMesh; geo: THREE.BufferGeometry; mat: THREE.Material } {
+  const geo = flat
+    ? new THREE.CircleGeometry(1.0, 24)
+    : new THREE.SphereGeometry(1.0, 12, 8);
+  const mat = flat
+    ? new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide })
+    : new THREE.MeshPhongMaterial({ color: 0xffffff, flatShading: false });
+  const mesh = new THREE.InstancedMesh(geo, mat, N);
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+
+  for (let i = 0; i < N; i++) {
+    _dummy.position.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+    _dummy.quaternion.identity();
+    _dummy.updateMatrix();
+    mesh.setMatrixAt(i, _dummy.matrix);
+    mesh.setColorAt(i, new THREE.Color(1, 1, 1));
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  return { mesh, geo, mat };
+}
+
+function billboardInstances(
+  mesh: THREE.InstancedMesh,
+  positions: Float32Array,
+  camera: THREE.Camera,
+): void {
+  const N = mesh.count;
+  _dummy.quaternion.copy(camera.quaternion);
+  for (let i = 0; i < N; i++) {
+    _dummy.position.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+    _dummy.updateMatrix();
+    mesh.setMatrixAt(i, _dummy.matrix);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------------------
 // Create visualization
 // ---------------------------------------------------------------------------
 
@@ -101,6 +160,7 @@ export function createVisualization(
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.toneMapping = THREE.ReinhardToneMapping;
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
@@ -120,52 +180,92 @@ export function createVisualization(
   controls.autoRotate = true;
   controls.autoRotateSpeed = 0.4;
 
-  // Subtle ambient + directional light so spheres have some shading
   scene.add(new THREE.AmbientLight(0xffffff, 0.6));
   const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
   dirLight.position.set(100, 200, 150);
   scene.add(dirLight);
 
+  // --- Postprocessing ---
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+
+  const bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    0.2, // strength
+    0.2, // radius
+    0.2, // threshold
+  );
+  bloomPass.enabled = false;
+  composer.addPass(bloomPass);
+  composer.addPass(new OutputPass());
+
   // --- Layout ---
   const { positions, edges, edgeWeights: edgeWeightsArr } = computeLayout(net, edgeWeightThreshold);
 
-  // --- Nodes (InstancedMesh) ---
-  const sphereGeo = new THREE.SphereGeometry(1.0, 12, 8);
-  const sphereMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-  const nodeMesh = new THREE.InstancedMesh(sphereGeo, sphereMat, N);
-  nodeMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-
-  const dummy = new THREE.Object3D();
-  for (let i = 0; i < N; i++) {
-    dummy.position.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
-    dummy.updateMatrix();
-    nodeMesh.setMatrixAt(i, dummy.matrix);
-    nodeMesh.setColorAt(i, new THREE.Color(1, 1, 1));
-  }
-  nodeMesh.instanceMatrix.needsUpdate = true;
-  if (nodeMesh.instanceColor) nodeMesh.instanceColor.needsUpdate = true;
+  // --- Nodes ---
+  let flat = true;
+  let nodeState = createNodeMesh(N, positions, flat);
+  let nodeMesh = nodeState.mesh;
   scene.add(nodeMesh);
 
-  // --- Edges (LineSegments with per-vertex color) ---
+  // --- Edges (curved) ---
+  const S = CURVE_SEGMENTS;
   const numEdges = edges.length;
-  const edgePositionArr = new Float32Array(numEdges * 2 * 3);
-  const edgeColorArr = new Float32Array(numEdges * 2 * 3);
+  const vertsPerEdge = S * 2; // LineSegments: each segment = 2 verts
+  const edgePositionArr = new Float32Array(numEdges * vertsPerEdge * 3);
+  const edgeColorArr = new Float32Array(numEdges * vertsPerEdge * 3);
   const edgeSources = new Uint32Array(numEdges);
 
+  const _a = new THREE.Vector3();
+  const _b = new THREE.Vector3();
+  const _mid = new THREE.Vector3();
+  const _dir = new THREE.Vector3();
+  const _perp = new THREE.Vector3();
+  const _rand = new THREE.Vector3();
+  const _ctrl = new THREE.Vector3();
+  const _curve = new THREE.QuadraticBezierCurve3(new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3());
+
   for (let e = 0; e < numEdges; e++) {
-    const [a, b] = edges[e];
-    edgeSources[e] = a;
-    edgePositionArr[e * 6 + 0] = positions[a * 3];
-    edgePositionArr[e * 6 + 1] = positions[a * 3 + 1];
-    edgePositionArr[e * 6 + 2] = positions[a * 3 + 2];
-    edgePositionArr[e * 6 + 3] = positions[b * 3];
-    edgePositionArr[e * 6 + 4] = positions[b * 3 + 1];
-    edgePositionArr[e * 6 + 5] = positions[b * 3 + 2];
-    // Initial color: based on weight only (Y channel)
+    const [ai, bi] = edges[e];
+    edgeSources[e] = ai;
+
+    _a.set(positions[ai * 3], positions[ai * 3 + 1], positions[ai * 3 + 2]);
+    _b.set(positions[bi * 3], positions[bi * 3 + 1], positions[bi * 3 + 2]);
+
+    _mid.addVectors(_a, _b).multiplyScalar(0.5);
+    _dir.subVectors(_b, _a);
+    const len = _dir.length();
+    _dir.normalize();
+
+    _rand.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+    _perp.crossVectors(_dir, _rand).normalize();
+    if (_perp.lengthSq() < 0.001) {
+      _rand.set(0, 1, 0);
+      _perp.crossVectors(_dir, _rand).normalize();
+    }
+    _ctrl.copy(_mid).addScaledVector(_perp, len * CURVE_AMOUNT * (Math.random() * 0.5 + 0.75));
+
+    _curve.v0.copy(_a);
+    _curve.v1.copy(_ctrl);
+    _curve.v2.copy(_b);
+    const pts = _curve.getPoints(S);
+
+    const baseVert = e * vertsPerEdge * 3;
+    for (let s = 0; s < S; s++) {
+      const p0 = pts[s];
+      const p1 = pts[s + 1];
+      const vi = baseVert + s * 6;
+      edgePositionArr[vi + 0] = p0.x; edgePositionArr[vi + 1] = p0.y; edgePositionArr[vi + 2] = p0.z;
+      edgePositionArr[vi + 3] = p1.x; edgePositionArr[vi + 4] = p1.y; edgePositionArr[vi + 5] = p1.z;
+    }
+
     const y = edgeWeightsArr[e];
     const r = 1, g = 1, bl = 1 - y;
-    edgeColorArr[e * 6 + 0] = r; edgeColorArr[e * 6 + 1] = g; edgeColorArr[e * 6 + 2] = bl;
-    edgeColorArr[e * 6 + 3] = r; edgeColorArr[e * 6 + 4] = g; edgeColorArr[e * 6 + 5] = bl;
+    for (let s = 0; s < S; s++) {
+      const ci = baseVert + s * 6;
+      edgeColorArr[ci + 0] = r; edgeColorArr[ci + 1] = g; edgeColorArr[ci + 2] = bl;
+      edgeColorArr[ci + 3] = r; edgeColorArr[ci + 4] = g; edgeColorArr[ci + 5] = bl;
+    }
   }
   const edgeGeo = new THREE.BufferGeometry();
   edgeGeo.setAttribute("position", new THREE.BufferAttribute(edgePositionArr, 3));
@@ -181,41 +281,81 @@ export function createVisualization(
   scene.add(edgeLineSegments);
 
   const edgeFlash = new Float64Array(numEdges);
-
-  // --- Fire flash state ---
   const fireFlash = new Float64Array(N);
 
   // --- Resize handler ---
   function resize() {
-    camera.aspect = window.innerWidth / window.innerHeight;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setSize(w, h);
+    composer.setSize(w, h);
+    bloomPass.resolution.set(w, h);
   }
   window.addEventListener("resize", resize);
 
-  return {
+  const viz: NetworkVisualization = {
     renderer,
     scene,
     camera,
     controls,
+    composer,
+    bloomPass,
     nodePositions: positions,
     nodeMesh,
+    flatNodes: flat,
     edgeLineSegments,
+    edgeSegsPerEdge: S,
     fireFlash,
     edgeSources,
     edgeWeights: edgeWeightsArr,
     edgeFlash,
+
+    updateNodeBillboard() {
+      if (flat) billboardInstances(nodeMesh, positions, camera);
+    },
+
+    setFlatNodes(newFlat: boolean) {
+      if (newFlat === flat) return;
+      flat = newFlat;
+      viz.flatNodes = flat;
+
+      // Copy instance colors from old mesh before disposing
+      const oldColors = nodeMesh.instanceColor
+        ? (nodeMesh.instanceColor.array as Float32Array).slice()
+        : null;
+
+      scene.remove(nodeMesh);
+      nodeState.geo.dispose();
+      nodeState.mat.dispose();
+
+      nodeState = createNodeMesh(N, positions, flat);
+      nodeMesh = nodeState.mesh;
+      viz.nodeMesh = nodeMesh;
+
+      if (oldColors && nodeMesh.instanceColor) {
+        (nodeMesh.instanceColor.array as Float32Array).set(oldColors);
+        nodeMesh.instanceColor.needsUpdate = true;
+      }
+
+      scene.add(nodeMesh);
+    },
+
     resize,
     dispose() {
       window.removeEventListener("resize", resize);
       renderer.domElement.remove();
       renderer.dispose();
-      sphereGeo.dispose();
-      sphereMat.dispose();
+      composer.dispose();
+      nodeState.geo.dispose();
+      nodeState.mat.dispose();
       edgeGeo.dispose();
       edgeMat.dispose();
     },
   };
+
+  return viz;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,14 +374,12 @@ export function updateColors(
   const firing = net.state.firing;
   const flash = viz.fireFlash;
 
-  // --- Nodes ---
   for (let i = 0; i < N; i++) {
     if (firing[i]) flash[i] = 1.0;
 
-    const c = activations[i]; // cyan channel
-    const m = flash[i]; // magenta channel
+    const c = activations[i];
+    const m = flash[i];
 
-    // CMYK→RGB with Y=0, K=0:  R = 1-C,  G = 1-M,  B = 1
     _tmpColor.setRGB(1 - c, 1 - m, 1);
     viz.nodeMesh.setColorAt(i, _tmpColor);
 
@@ -253,29 +391,32 @@ export function updateColors(
     viz.nodeMesh.instanceColor.needsUpdate = true;
   }
 
-  // --- Edges ---
   const colorAttr = viz.edgeLineSegments.geometry.getAttribute("color") as THREE.BufferAttribute;
   const colors = colorAttr.array as Float32Array;
   const eSources = viz.edgeSources;
   const eWeights = viz.edgeWeights;
   const eFlash = viz.edgeFlash;
   const numEdges = eSources.length;
+  const S = viz.edgeSegsPerEdge;
+  const stride = S * 2 * 3; // floats per edge in the color buffer
 
   for (let e = 0; e < numEdges; e++) {
     const src = eSources[e];
     if (firing[src]) eFlash[e] = 1.0;
 
-    const c = eFlash[e];  // cyan = activation flowing through edge
-    const y = eWeights[e]; // yellow = weight magnitude
+    const c = eFlash[e];
+    const y = eWeights[e];
 
-    // CMYK→RGB with M=0, K=0:  R = 1-C,  G = 1,  B = 1-Y
     const r = 1 - c;
     const g = 1;
     const b = 1 - y;
 
-    // Both vertices of the line segment get the same color
-    colors[e * 6 + 0] = r; colors[e * 6 + 1] = g; colors[e * 6 + 2] = b;
-    colors[e * 6 + 3] = r; colors[e * 6 + 4] = g; colors[e * 6 + 5] = b;
+    const base = e * stride;
+    for (let s = 0; s < S; s++) {
+      const ci = base + s * 6;
+      colors[ci + 0] = r; colors[ci + 1] = g; colors[ci + 2] = b;
+      colors[ci + 3] = r; colors[ci + 4] = g; colors[ci + 5] = b;
+    }
 
     eFlash[e] *= flashDecay;
     if (eFlash[e] < 0.01) eFlash[e] = 0;

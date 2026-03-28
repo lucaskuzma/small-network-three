@@ -42,6 +42,11 @@ const params = {
   refractionPeriod: DEFAULT_REFRACTION_PERIOD,
   refractionVariation: DEFAULT_REFRACTION_VARIATION,
   edgeWeightThreshold: 0.05,
+  flatNodes: true,
+  bloom: false,
+  bloomStrength: 0.2,
+  bloomRadius: 0.2,
+  bloomThreshold: 0.2,
   reset: () => rebuild(),
 };
 
@@ -84,6 +89,16 @@ function rebuild() {
 
   viz = createVisualization(net, document.body, params.edgeWeightThreshold);
   charts = createReadoutCharts(net);
+
+  syncVisualParams();
+}
+
+function syncVisualParams() {
+  viz.setFlatNodes(params.flatNodes);
+  viz.bloomPass.enabled = params.bloom;
+  viz.bloomPass.strength = params.bloomStrength;
+  viz.bloomPass.radius = params.bloomRadius;
+  viz.bloomPass.threshold = params.bloomThreshold;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +126,25 @@ function buildGUI() {
   network.add(params, "refractionPeriod", 1, 20, 1).name("Refrac. period");
   network.add(params, "refractionVariation", 0, 100, 1).name("Refrac. var.");
   network.add(params, "edgeWeightThreshold", 0, 0.3, 0.01).name("Edge threshold");
+
+  const visual = gui.addFolder("Visual");
+  visual.add(params, "flatNodes").name("Flat nodes").onChange(() => {
+    viz.setFlatNodes(params.flatNodes);
+  });
+
+  const bloomFolder = visual.addFolder("Bloom");
+  bloomFolder.add(params, "bloom").name("Enable").onChange(() => {
+    viz.bloomPass.enabled = params.bloom;
+  });
+  bloomFolder.add(params, "bloomStrength", 0, 3, 0.05).name("Strength").onChange(() => {
+    viz.bloomPass.strength = params.bloomStrength;
+  });
+  bloomFolder.add(params, "bloomRadius", 0, 2, 0.05).name("Radius").onChange(() => {
+    viz.bloomPass.radius = params.bloomRadius;
+  });
+  bloomFolder.add(params, "bloomThreshold", 0, 1, 0.05).name("Threshold").onChange(() => {
+    viz.bloomPass.threshold = params.bloomThreshold;
+  });
 
   gui.add(params, "reset").name("Rebuild network");
 }
@@ -142,12 +176,18 @@ function animate() {
   }
 
   updateColors(viz, net, params.flashDecay);
+  viz.updateNodeBillboard();
   updateReadoutCharts(charts, net, viz.camera, viz.nodePositions, params.playing, params.flashDecay);
   viz.controls.update();
 
   // Pass 1: main 3D scene
-  viz.renderer.render(viz.scene, viz.camera);
-  // Pass 2: HUD charts overlay (preserve color buffer, clear depth)
+  if (params.bloom) {
+    viz.composer.render();
+  } else {
+    viz.renderer.render(viz.scene, viz.camera);
+  }
+
+  // Pass 2: HUD charts overlay
   viz.renderer.autoClear = false;
   viz.renderer.clearDepth();
   viz.renderer.render(charts.scene, charts.camera);
