@@ -80,7 +80,7 @@ function rebuild() {
   step = 0;
 
   viz = createVisualization(net, document.body, params.edgeWeightThreshold);
-  charts = createReadoutCharts(viz.scene, net, viz.nodePositions);
+  charts = createReadoutCharts(net);
 }
 
 // ---------------------------------------------------------------------------
@@ -124,11 +124,16 @@ function animate() {
   }
 
   updateColors(viz, net, params.flashDecay);
-  if (params.playing) {
-    updateReadoutCharts(charts, net, viz.camera, viz.nodePositions);
-  }
+  updateReadoutCharts(charts, net, viz.camera, viz.nodePositions, params.playing);
   viz.controls.update();
+
+  // Pass 1: main 3D scene
   viz.renderer.render(viz.scene, viz.camera);
+  // Pass 2: HUD charts overlay (preserve color buffer, clear depth)
+  viz.renderer.autoClear = false;
+  viz.renderer.clearDepth();
+  viz.renderer.render(charts.scene, charts.camera);
+  viz.renderer.autoClear = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,4 +142,10 @@ function animate() {
 
 rebuild();
 buildGUI();
+
+window.addEventListener("resize", () => {
+  viz.resize();
+  charts.resize(window.innerWidth, window.innerHeight);
+});
+
 animate();
