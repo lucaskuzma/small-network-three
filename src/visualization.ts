@@ -473,11 +473,11 @@ export function updateColors(
   const refCounters = net.refractoryCounters;
   const refPeriods = net.refractionPeriods;
 
-  // Nodes: RGB = (1-C, 1-M, 1)  C=activation, M=refractory flash
+  // Nodes: RGB = (1-C, 1-M, 1)  C=refractory flash, M=activation
   for (let i = 0; i < N; i++) {
-    const c = activations[i];
     const period = refPeriods[i];
-    const m = period > 0 ? refCounters[i] / period : 0;
+    const c = period > 0 ? refCounters[i] / period : 0;
+    const m = activations[i];
 
     _tmpColor.setRGB(1 - c, 1 - m, 1);
     viz.nodeMesh.setColorAt(i, _tmpColor);
@@ -487,7 +487,7 @@ export function updateColors(
     viz.nodeMesh.instanceColor.needsUpdate = true;
   }
 
-  // Edges: RGB = (1-C, 1-M, 1-Y)  C=source activation, M=source refractory flash, Y=weight
+  // Edges: RGB = (1-C, 1-M, 1-Y)  C=source refractory flash, M=source activation, Y=weight
   const colorAttr = viz.edgeLineSegments.geometry.getAttribute(
     "color",
   ) as THREE.BufferAttribute;
@@ -501,11 +501,11 @@ export function updateColors(
   for (let e = 0; e < numEdges; e++) {
     const src = eSources[e];
     const period = refPeriods[src];
-    const m = period > 0 ? refCounters[src] / period : 0;
+    const c = period > 0 ? refCounters[src] / period : 0;
     const y = eWeights[e];
 
-    const r = 1 - activations[src];
-    const g = 1 - m;
+    const r = 1 - c;
+    const g = 1 - activations[src];
     const b = 1 - y;
 
     const base = e * stride;

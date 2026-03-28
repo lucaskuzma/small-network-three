@@ -295,12 +295,12 @@ export function updateReadoutCharts(
     const yBase = charts.yBases[readout];
 
     const period = refPeriods[neuronIdx];
-    const m = period > 0 ? refCounters[neuronIdx] / period : 0;
+    const c = period > 0 ? refCounters[neuronIdx] / period : 0;
     const y = weight;
 
-    // RGB = (1-C, 1-M, 1-Y)  C=source activation, M=refractory flash, Y=weight
-    const cr = 1 - net.activations[neuronIdx];
-    const cg = 1 - m;
+    // RGB = (1-C, 1-M, 1-Y)  C=refractory flash, M=source activation, Y=weight
+    const cr = 1 - c;
+    const cg = 1 - net.activations[neuronIdx];
     const cb = 1 - y;
 
     const colAttr = line.geometry.getAttribute("color") as THREE.BufferAttribute;
