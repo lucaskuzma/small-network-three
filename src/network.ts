@@ -120,7 +120,7 @@ export class NeuralNetwork {
     this.outputs = new Float64Array(K);
     this.refractoryCounters = new Int32Array(M);
 
-    this.regenerateBase();
+    this.randomizeWeights();
     this.recomputeDerived();
     this.kickstart();
   }
@@ -129,16 +129,18 @@ export class NeuralNetwork {
 
   reseed(newSeed: number): void {
     this.seed = newSeed;
-    this.regenerateBase();
+    this.randomizeWeights();
     this.recomputeDerived();
     this.resetState();
     this.kickstart();
   }
 
-  private regenerateBase(): void {
+  randomizeWeights(): void {
     const rng = mulberry32(this.seed);
     const M = MAX_NEURONS;
     const K = this.numOutputs;
+    const nPer = this.nOutputsPerReadout;
+    const nRead = this.numReadouts;
 
     for (let i = 0; i < M * M; i++) {
       const u1 = rng();
@@ -155,6 +157,7 @@ export class NeuralNetwork {
     for (let i = 0; i < M; i++) this.baseRefractionVar[i] = rng();
     for (let i = 0; i < M * K; i++) this.baseOutputMagnitude[i] = rng();
     for (let i = 0; i < M * K; i++) this.outputSparsityRank[i] = rng();
+
   }
 
   // -- Derived recomputation -------------------------------------------------
@@ -197,12 +200,17 @@ export class NeuralNetwork {
   }
 
   private recomputeOutputWeights(): void {
-    const N = this.numNeurons;
+    const M = MAX_NEURONS;
     const K = this.numOutputs;
+    const nPer = this.nOutputsPerReadout;
+    const nRead = this.numReadouts;
 
     this.outputWeights.fill(0);
-    for (let i = 0; i < N; i++) {
-      for (let k = 0; k < K; k++) {
+    for (let i = 0; i < M; i++) {
+      const readout = this.moduleAssignments[i] % nRead;
+      const colStart = readout * nPer;
+      const colEnd = colStart + nPer;
+      for (let k = colStart; k < colEnd; k++) {
         const idx = i * K + k;
         if (this.outputSparsityRank[idx] < OUTPUT_SPARSITY) {
           this.outputWeights[idx] = this.baseOutputMagnitude[idx] * OUTPUT_SCALE;
@@ -260,12 +268,10 @@ export class NeuralNetwork {
 
     if ("numModules" in changes || "numNeurons" in changes) {
       this.recomputeModules();
+      this.recomputeOutputWeights();
     }
     if (weightsChanged) {
       this.recomputeEffectiveWeights();
-    }
-    if ("numNeurons" in changes) {
-      this.recomputeOutputWeights();
     }
     if ("refractionPeriod" in changes || "refractionVariation" in changes) {
       this.recomputeRefractionPeriods();

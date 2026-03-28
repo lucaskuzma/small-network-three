@@ -108,7 +108,11 @@ function buildGUI() {
   network
     .add(params, "numModules", 1, 8, 1)
     .name("Modules")
-    .onFinishChange(onWeightParamChange);
+    .onFinishChange(() => {
+      onWeightParamChange();
+      charts.dispose();
+      charts = createReadoutCharts(net);
+    });
   network
     .add(params, "interModuleFactor", 0, 1, 0.05)
     .name("Inter-module")
@@ -156,7 +160,7 @@ function buildGUI() {
       },
       "randomize",
     )
-    .name("Randomize");
+    .name("Randomize weights");
   network
     .add(
       { layout: () => viz.reLayout(net, params.edgeWeightThreshold) },
