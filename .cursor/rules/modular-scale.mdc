@@ -1,0 +1,11 @@
+---
+description: Use modular scale values for spatial/sizing parameters
+globs: **/*.ts
+---
+# Modular Scale
+
+Use values from a modular scale for all positional and sizing parameters (margins, padding, gaps, dimensions, offsets):
+
+**2, 4, 8, 16, 24, 32, 48, 72, 96, 128, 192, 256**
+
+Do not use arbitrary numbers like 15, 50, 60, 100 for spatial values.
