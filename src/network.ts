@@ -16,6 +16,7 @@ export interface NetworkParams {
   weightScale: number;
   activationLeak: number;
   refractionLeak: number;
+  outputDecay: number;
   refractionPeriod: number;
   refractionVariation: number;
 }
@@ -28,6 +29,7 @@ export const DEFAULT_PARAMS: NetworkParams = {
   weightScale: 0.3,
   activationLeak: 0.98,
   refractionLeak: 0.75,
+  outputDecay: 0.75,
   refractionPeriod: 2,
   refractionVariation: 62,
 };
@@ -331,7 +333,8 @@ export class NeuralNetwork {
 
     // 6. Outputs (decay + new firing contributions)
     const K = this.numOutputs;
-    for (let i = 0; i < K; i++) this.outputs[i] *= refLeak;
+    const outDecay = this.params.outputDecay;
+    for (let i = 0; i < K; i++) this.outputs[i] *= outDecay;
     for (let i = 0; i < N; i++) {
       if (newFiring[i] === 0) continue;
       const base = i * K;

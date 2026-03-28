@@ -134,6 +134,10 @@ function buildGUI() {
     .name("Refrac. leak")
     .onChange(() => net.updateParams({ refractionLeak: params.refractionLeak }));
   network
+    .add(params, "outputDecay", 0.3, 1, 0.01)
+    .name("Output decay")
+    .onChange(() => net.updateParams({ outputDecay: params.outputDecay }));
+  network
     .add(params, "refractionPeriod", 1, 20, 1)
     .name("Refrac. period")
     .onChange(() =>
