@@ -31,10 +31,8 @@ export interface NetworkVisualization {
   flatNodes: boolean;
   edgeLineSegments: THREE.LineSegments;
   edgeSegsPerEdge: number;
-  fireFlash: Float64Array;
   edgeSources: Uint32Array;
   edgeWeights: Float32Array;
-  edgeFlash: Float64Array;
   updateNodeBillboard(): void;
   setFlatNodes(flat: boolean): void;
   setNodeCount(n: number): void;
@@ -325,8 +323,6 @@ export function createVisualization(
   // --- Edges ---
   const S = CURVE_SEGMENTS;
   let edgeData = buildEdgeArrays(net, positions, edgeWeightThreshold);
-  let edgeFlash = new Float64Array(edgeData.numEdges);
-  const fireFlash = new Float64Array(MAX_NEURONS);
 
   let edgeGeo = new THREE.BufferGeometry();
   edgeGeo.setAttribute(
@@ -370,10 +366,8 @@ export function createVisualization(
     flatNodes: flat,
     edgeLineSegments,
     edgeSegsPerEdge: S,
-    fireFlash,
     edgeSources: edgeData.sources,
     edgeWeights: edgeData.weights,
-    edgeFlash,
 
     updateNodeBillboard() {
       if (flat) billboardInstances(nodeMesh, positions, camera);
@@ -430,7 +424,6 @@ export function createVisualization(
       edgeGeo.dispose();
 
       edgeData = buildEdgeArrays(netRef, positions, threshold);
-      edgeFlash = new Float64Array(edgeData.numEdges);
 
       edgeGeo = new THREE.BufferGeometry();
       edgeGeo.setAttribute(
@@ -447,7 +440,6 @@ export function createVisualization(
       viz.edgeLineSegments = edgeLineSegments;
       viz.edgeSources = edgeData.sources;
       viz.edgeWeights = edgeData.weights;
-      viz.edgeFlash = edgeFlash;
     },
 
     resize,
@@ -475,50 +467,45 @@ const _tmpColor = new THREE.Color();
 export function updateColors(
   viz: NetworkVisualization,
   net: NeuralNetwork,
-  flashDecay: number = 0.85,
 ): void {
   const N = net.numNeurons;
   const activations = net.activations;
-  const firing = net.firing;
-  const flash = viz.fireFlash;
+  const refCounters = net.refractoryCounters;
+  const refPeriods = net.refractionPeriods;
 
+  // Nodes: RGB = (1-C, 1-M, 1)  C=activation, M=refractory flash
   for (let i = 0; i < N; i++) {
-    if (firing[i]) flash[i] = 1.0;
-
     const c = activations[i];
-    const m = flash[i];
+    const period = refPeriods[i];
+    const m = period > 0 ? refCounters[i] / period : 0;
 
     _tmpColor.setRGB(1 - c, 1 - m, 1);
     viz.nodeMesh.setColorAt(i, _tmpColor);
-
-    flash[i] *= flashDecay;
-    if (flash[i] < 0.01) flash[i] = 0;
   }
 
   if (viz.nodeMesh.instanceColor) {
     viz.nodeMesh.instanceColor.needsUpdate = true;
   }
 
+  // Edges: RGB = (1-C, 1-M, 1-Y)  C=source activation, M=source refractory flash, Y=weight
   const colorAttr = viz.edgeLineSegments.geometry.getAttribute(
     "color",
   ) as THREE.BufferAttribute;
   const colors = colorAttr.array as Float32Array;
   const eSources = viz.edgeSources;
   const eWeights = viz.edgeWeights;
-  const eFlash = viz.edgeFlash;
   const numEdges = eSources.length;
   const S = viz.edgeSegsPerEdge;
   const stride = S * 2 * 3;
 
   for (let e = 0; e < numEdges; e++) {
     const src = eSources[e];
-    if (firing[src]) eFlash[e] = 1.0;
-
-    const c = eFlash[e];
+    const period = refPeriods[src];
+    const m = period > 0 ? refCounters[src] / period : 0;
     const y = eWeights[e];
 
-    const r = 1 - c;
-    const g = 1;
+    const r = 1 - activations[src];
+    const g = 1 - m;
     const b = 1 - y;
 
     const base = e * stride;
@@ -531,9 +518,6 @@ export function updateColors(
       colors[ci + 4] = g;
       colors[ci + 5] = b;
     }
-
-    eFlash[e] *= flashDecay;
-    if (eFlash[e] < 0.01) eFlash[e] = 0;
   }
 
   colorAttr.needsUpdate = true;

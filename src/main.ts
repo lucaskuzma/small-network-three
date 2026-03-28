@@ -23,7 +23,6 @@ const params = {
   pulse: false,
   bpm: 120,
   ticksPerFrame: 1,
-  flashDecay: 0.85,
 
   // Network (seed + decomposed params)
   seed: Math.floor(Math.random() * 0x7fffffff),
@@ -97,7 +96,6 @@ function buildGUI() {
   sim.add(params, "pulse").name("Pulse");
   sim.add(params, "bpm", 30, 300, 1).name("BPM");
   sim.add(params, "ticksPerFrame", 1, 20, 1).name("Ticks / frame");
-  sim.add(params, "flashDecay", 0.5, 0.99, 0.01).name("Flash decay");
 
   const network = gui.addFolder("Network");
   network.add(params, "seed").name("Seed").disable();
@@ -138,7 +136,7 @@ function buildGUI() {
     .name("Output decay")
     .onChange(() => net.updateParams({ outputDecay: params.outputDecay }));
   network
-    .add(params, "refractionPeriod", 1, 20, 1)
+    .add(params, "refractionPeriod", 1, 96, 1)
     .name("Refrac. period")
     .onChange(() =>
       net.updateParams({ refractionPeriod: params.refractionPeriod }),
@@ -223,7 +221,7 @@ function animate() {
     }
   }
 
-  updateColors(viz, net, params.flashDecay);
+  updateColors(viz, net);
   viz.updateNodeBillboard();
   updateReadoutCharts(
     charts,
@@ -231,7 +229,6 @@ function animate() {
     viz.camera,
     viz.nodePositions,
     params.playing,
-    params.flashDecay,
   );
   viz.controls.update();
 

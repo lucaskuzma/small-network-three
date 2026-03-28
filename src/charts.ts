@@ -35,7 +35,6 @@ interface ConnectorInfo {
   outputIdx: number;
   weight: number; // absolute output weight, normalized [0,1]
   line: THREE.Line;
-  flash: number;
 }
 
 /** Anchor-to-chart "write line" per output channel */
@@ -194,7 +193,7 @@ export function createReadoutCharts(net: NeuralNetwork): ReadoutCharts {
     });
     const line = new THREE.Line(geo, mat);
     hudScene.add(line);
-    connectors.push({ neuronIdx, readout, outputIdx, weight, line, flash: 0 });
+    connectors.push({ neuronIdx, readout, outputIdx, weight, line });
     disposables.push({ geo, mat });
   }
 
@@ -257,12 +256,12 @@ export function updateReadoutCharts(
   worldCamera: THREE.PerspectiveCamera,
   nodePositions: Float32Array,
   pushData: boolean,
-  flashDecay: number = 0.85,
 ): void {
   const numReadouts = net.numReadouts;
   const nPer = charts.nPerReadout;
   const outputs = net.outputs;
-  const firing = net.firing;
+  const refCounters = net.refractoryCounters;
+  const refPeriods = net.refractionPeriods;
   const h = charts.camera.top;
   const w = charts.camera.right;
   const groupY = h - MARGIN; // group's screen-space Y origin
@@ -295,13 +294,13 @@ export function updateReadoutCharts(
     const { neuronIdx, readout, outputIdx, weight, line } = conn;
     const yBase = charts.yBases[readout];
 
-    if (firing[neuronIdx]) conn.flash = 1.0;
-    const c = conn.flash;
+    const period = refPeriods[neuronIdx];
+    const m = period > 0 ? refCounters[neuronIdx] / period : 0;
     const y = weight;
 
-    // CMYK→RGB with M=0, K=0
-    const cr = 1 - c;
-    const cg = 1;
+    // RGB = (1-C, 1-M, 1-Y)  C=source activation, M=refractory flash, Y=weight
+    const cr = 1 - net.activations[neuronIdx];
+    const cg = 1 - m;
     const cb = 1 - y;
 
     const colAttr = line.geometry.getAttribute("color") as THREE.BufferAttribute;
@@ -309,9 +308,6 @@ export function updateReadoutCharts(
     colors[0] = cr; colors[1] = cg; colors[2] = cb;
     colors[3] = cr; colors[4] = cg; colors[5] = cb;
     colAttr.needsUpdate = true;
-
-    conn.flash *= flashDecay;
-    if (conn.flash < 0.01) conn.flash = 0;
 
     // Projected neuron position
     _projected.set(
