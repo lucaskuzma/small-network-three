@@ -13,7 +13,7 @@ import {
   DEFAULT_REFRACTION_PERIOD,
   DEFAULT_REFRACTION_VARIATION,
 } from "./network.ts";
-import { createVisualization, updateNodeColors } from "./visualization.ts";
+import { createVisualization, updateColors } from "./visualization.ts";
 
 // ---------------------------------------------------------------------------
 // State
@@ -119,7 +119,7 @@ function animate() {
     }
   }
 
-  updateNodeColors(viz, net, params.flashDecay);
+  updateColors(viz, net, params.flashDecay);
   viz.controls.update();
   viz.renderer.render(viz.scene, viz.camera);
 }

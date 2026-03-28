@@ -18,6 +18,12 @@ export interface NetworkVisualization {
   edgeLineSegments: THREE.LineSegments;
   /** Per-neuron magenta flash channel, decays each frame. */
   fireFlash: Float64Array;
+  /** Per-edge: source neuron index */
+  edgeSources: Uint32Array;
+  /** Per-edge: absolute weight (used as Y channel) */
+  edgeWeights: Float32Array;
+  /** Per-edge activation flash, decays each frame */
+  edgeFlash: Float64Array;
   resize(): void;
   dispose(): void;
 }
@@ -26,10 +32,16 @@ export interface NetworkVisualization {
 // Build the ngraph and run force-directed layout
 // ---------------------------------------------------------------------------
 
+interface LayoutResult {
+  positions: Float32Array;
+  edges: [number, number][];
+  edgeWeights: Float32Array;
+}
+
 function computeLayout(
   net: NeuralNetwork,
   weightThreshold: number,
-): { positions: Float32Array; edges: [number, number][] } {
+): LayoutResult {
   const N = net.state.numNeurons;
   const w = net.state.networkWeights;
 
@@ -37,6 +49,7 @@ function computeLayout(
   for (let i = 0; i < N; i++) graph.addNode(i);
 
   const edges: [number, number][] = [];
+  const weightList: number[] = [];
   for (let i = 0; i < N; i++) {
     for (let j = 0; j < N; j++) {
       if (i === j) continue;
@@ -44,6 +57,7 @@ function computeLayout(
       if (Math.abs(val) > weightThreshold) {
         graph.addLink(i, j);
         edges.push([i, j]);
+        weightList.push(Math.abs(val));
       }
     }
   }
@@ -69,7 +83,7 @@ function computeLayout(
   }
 
   layout.dispose();
-  return { positions, edges };
+  return { positions, edges, edgeWeights: Float32Array.from(weightList) };
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +125,7 @@ export function createVisualization(
   scene.add(dirLight);
 
   // --- Layout ---
-  const { positions, edges } = computeLayout(net, edgeWeightThreshold);
+  const { positions, edges, edgeWeights: edgeWeightsArr } = computeLayout(net, edgeWeightThreshold);
 
   // --- Nodes (InstancedMesh) ---
   const sphereGeo = new THREE.SphereGeometry(1.0, 12, 8);
@@ -130,26 +144,41 @@ export function createVisualization(
   if (nodeMesh.instanceColor) nodeMesh.instanceColor.needsUpdate = true;
   scene.add(nodeMesh);
 
-  // --- Edges (LineSegments) ---
-  const edgePositions = new Float32Array(edges.length * 2 * 3);
-  for (let e = 0; e < edges.length; e++) {
+  // --- Edges (LineSegments with per-vertex color) ---
+  const numEdges = edges.length;
+  const edgePositionArr = new Float32Array(numEdges * 2 * 3);
+  const edgeColorArr = new Float32Array(numEdges * 2 * 3);
+  const edgeSources = new Uint32Array(numEdges);
+
+  for (let e = 0; e < numEdges; e++) {
     const [a, b] = edges[e];
-    edgePositions[e * 6 + 0] = positions[a * 3];
-    edgePositions[e * 6 + 1] = positions[a * 3 + 1];
-    edgePositions[e * 6 + 2] = positions[a * 3 + 2];
-    edgePositions[e * 6 + 3] = positions[b * 3];
-    edgePositions[e * 6 + 4] = positions[b * 3 + 1];
-    edgePositions[e * 6 + 5] = positions[b * 3 + 2];
+    edgeSources[e] = a;
+    edgePositionArr[e * 6 + 0] = positions[a * 3];
+    edgePositionArr[e * 6 + 1] = positions[a * 3 + 1];
+    edgePositionArr[e * 6 + 2] = positions[a * 3 + 2];
+    edgePositionArr[e * 6 + 3] = positions[b * 3];
+    edgePositionArr[e * 6 + 4] = positions[b * 3 + 1];
+    edgePositionArr[e * 6 + 5] = positions[b * 3 + 2];
+    // Initial color: based on weight only (Y channel)
+    const y = edgeWeightsArr[e];
+    const r = 1, g = 1, bl = 1 - y;
+    edgeColorArr[e * 6 + 0] = r; edgeColorArr[e * 6 + 1] = g; edgeColorArr[e * 6 + 2] = bl;
+    edgeColorArr[e * 6 + 3] = r; edgeColorArr[e * 6 + 4] = g; edgeColorArr[e * 6 + 5] = bl;
   }
   const edgeGeo = new THREE.BufferGeometry();
-  edgeGeo.setAttribute("position", new THREE.BufferAttribute(edgePositions, 3));
+  edgeGeo.setAttribute("position", new THREE.BufferAttribute(edgePositionArr, 3));
+  const edgeColorAttr = new THREE.BufferAttribute(edgeColorArr, 3);
+  edgeColorAttr.setUsage(THREE.DynamicDrawUsage);
+  edgeGeo.setAttribute("color", edgeColorAttr);
   const edgeMat = new THREE.LineBasicMaterial({
-    color: 0xffffff,
+    vertexColors: true,
     transparent: true,
-    opacity: 0.06,
+    opacity: 0.15,
   });
   const edgeLineSegments = new THREE.LineSegments(edgeGeo, edgeMat);
   scene.add(edgeLineSegments);
+
+  const edgeFlash = new Float64Array(numEdges);
 
   // --- Fire flash state ---
   const fireFlash = new Float64Array(N);
@@ -171,6 +200,9 @@ export function createVisualization(
     nodeMesh,
     edgeLineSegments,
     fireFlash,
+    edgeSources,
+    edgeWeights: edgeWeightsArr,
+    edgeFlash,
     resize,
     dispose() {
       window.removeEventListener("resize", resize);
@@ -185,12 +217,12 @@ export function createVisualization(
 }
 
 // ---------------------------------------------------------------------------
-// Update node colors each frame
+// Update colors each frame (nodes + edges)
 // ---------------------------------------------------------------------------
 
 const _tmpColor = new THREE.Color();
 
-export function updateNodeColors(
+export function updateColors(
   viz: NetworkVisualization,
   net: NeuralNetwork,
   flashDecay: number = 0.85,
@@ -200,8 +232,8 @@ export function updateNodeColors(
   const firing = net.state.firing;
   const flash = viz.fireFlash;
 
+  // --- Nodes ---
   for (let i = 0; i < N; i++) {
-    // Set flash to 1.0 for neurons that just fired
     if (firing[i]) flash[i] = 1.0;
 
     const c = activations[i]; // cyan channel
@@ -211,7 +243,6 @@ export function updateNodeColors(
     _tmpColor.setRGB(1 - c, 1 - m, 1);
     viz.nodeMesh.setColorAt(i, _tmpColor);
 
-    // Decay flash
     flash[i] *= flashDecay;
     if (flash[i] < 0.01) flash[i] = 0;
   }
@@ -219,4 +250,34 @@ export function updateNodeColors(
   if (viz.nodeMesh.instanceColor) {
     viz.nodeMesh.instanceColor.needsUpdate = true;
   }
+
+  // --- Edges ---
+  const colorAttr = viz.edgeLineSegments.geometry.getAttribute("color") as THREE.BufferAttribute;
+  const colors = colorAttr.array as Float32Array;
+  const eSources = viz.edgeSources;
+  const eWeights = viz.edgeWeights;
+  const eFlash = viz.edgeFlash;
+  const numEdges = eSources.length;
+
+  for (let e = 0; e < numEdges; e++) {
+    const src = eSources[e];
+    if (firing[src]) eFlash[e] = 1.0;
+
+    const c = eFlash[e];  // cyan = activation flowing through edge
+    const y = eWeights[e]; // yellow = weight magnitude
+
+    // CMYK→RGB with M=0, K=0:  R = 1-C,  G = 1,  B = 1-Y
+    const r = 1 - c;
+    const g = 1;
+    const b = 1 - y;
+
+    // Both vertices of the line segment get the same color
+    colors[e * 6 + 0] = r; colors[e * 6 + 1] = g; colors[e * 6 + 2] = b;
+    colors[e * 6 + 3] = r; colors[e * 6 + 4] = g; colors[e * 6 + 5] = b;
+
+    eFlash[e] *= flashDecay;
+    if (eFlash[e] < 0.01) eFlash[e] = 0;
+  }
+
+  colorAttr.needsUpdate = true;
 }
