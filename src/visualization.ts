@@ -286,7 +286,7 @@ export function createVisualization(
     0.1,
     5000,
   );
-  camera.position.set(0, 0, 1024);
+  camera.position.set(0, 0, 2048);
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
