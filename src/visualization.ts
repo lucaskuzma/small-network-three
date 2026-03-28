@@ -6,14 +6,18 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import createGraph from "ngraph.graph";
 import createLayout from "ngraph.forcelayout";
-import type { NeuralNetwork } from "./network.ts";
+import { type NeuralNetwork, MAX_NEURONS, mulberry32 } from "./network.ts";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const CURVE_SEGMENTS = 8;
+const CURVE_AMOUNT = 0.3;
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-const CURVE_SEGMENTS = 8;
-const CURVE_AMOUNT = 0.3; // control point offset as fraction of edge length
 
 export interface NetworkVisualization {
   renderer: THREE.WebGLRenderer;
@@ -26,50 +30,41 @@ export interface NetworkVisualization {
   nodeMesh: THREE.InstancedMesh;
   flatNodes: boolean;
   edgeLineSegments: THREE.LineSegments;
-  /** Number of line segment pairs per edge curve */
   edgeSegsPerEdge: number;
   fireFlash: Float64Array;
   edgeSources: Uint32Array;
   edgeWeights: Float32Array;
   edgeFlash: Float64Array;
-  /** Call each frame to billboard circle nodes. No-op when using spheres. */
   updateNodeBillboard(): void;
-  /** Toggle between flat circles and 3D spheres. */
   setFlatNodes(flat: boolean): void;
+  setNodeCount(n: number): void;
+  rebuildEdges(net: NeuralNetwork, edgeWeightThreshold: number): void;
+  /** Re-run force layout, update node positions + edges. */
+  reLayout(net: NeuralNetwork, edgeWeightThreshold: number): void;
   resize(): void;
   dispose(): void;
 }
 
 // ---------------------------------------------------------------------------
-// Build the ngraph and run force-directed layout
+// Force-directed layout for all MAX_NEURONS nodes
 // ---------------------------------------------------------------------------
 
-interface LayoutResult {
-  positions: Float32Array;
-  edges: [number, number][];
-  edgeWeights: Float32Array;
-}
-
-function computeLayout(
-  net: NeuralNetwork,
-  weightThreshold: number,
-): LayoutResult {
-  const N = net.state.numNeurons;
-  const w = net.state.networkWeights;
+function computeLayout(net: NeuralNetwork): Float32Array {
+  const M = MAX_NEURONS;
+  const { sparsity, numModules, interModuleFactor } = net.params;
+  const interSparsity = sparsity * interModuleFactor;
+  const modAssign = net.moduleAssignments;
 
   const graph = createGraph();
-  for (let i = 0; i < N; i++) graph.addNode(i);
+  for (let i = 0; i < M; i++) graph.addNode(i);
 
-  const edges: [number, number][] = [];
-  const weightList: number[] = [];
-  for (let i = 0; i < N; i++) {
-    for (let j = 0; j < N; j++) {
+  for (let i = 0; i < M; i++) {
+    for (let j = 0; j < M; j++) {
       if (i === j) continue;
-      const val = w[i * N + j];
-      if (Math.abs(val) > weightThreshold) {
+      const same = numModules <= 1 || modAssign[i] === modAssign[j];
+      const thr = same ? sparsity : interSparsity;
+      if (net.sparsityRank[i * M + j] < thr) {
         graph.addLink(i, j);
-        edges.push([i, j]);
-        weightList.push(Math.abs(val));
       }
     }
   }
@@ -86,8 +81,8 @@ function computeLayout(
 
   for (let i = 0; i < 200; i++) layout.step();
 
-  const positions = new Float32Array(N * 3);
-  for (let i = 0; i < N; i++) {
+  const positions = new Float32Array(M * 3);
+  for (let i = 0; i < M; i++) {
     const p = layout.getNodePosition(i);
     positions[i * 3] = p.x;
     positions[i * 3 + 1] = p.y;
@@ -95,7 +90,7 @@ function computeLayout(
   }
 
   layout.dispose();
-  return { positions, edges, edgeWeights: Float32Array.from(weightList) };
+  return positions;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,8 +100,8 @@ function computeLayout(
 const _dummy = new THREE.Object3D();
 
 function createNodeMesh(
-  N: number,
   positions: Float32Array,
+  numVisible: number,
   flat: boolean,
 ): { mesh: THREE.InstancedMesh; geo: THREE.BufferGeometry; mat: THREE.Material } {
   const geo = flat
@@ -115,10 +110,11 @@ function createNodeMesh(
   const mat = flat
     ? new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide })
     : new THREE.MeshPhongMaterial({ color: 0xffffff, flatShading: false });
-  const mesh = new THREE.InstancedMesh(geo, mat, N);
+  const mesh = new THREE.InstancedMesh(geo, mat, MAX_NEURONS);
+  mesh.count = numVisible;
   mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
-  for (let i = 0; i < N; i++) {
+  for (let i = 0; i < MAX_NEURONS; i++) {
     _dummy.position.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
     _dummy.quaternion.identity();
     _dummy.updateMatrix();
@@ -146,6 +142,124 @@ function billboardInstances(
 }
 
 // ---------------------------------------------------------------------------
+// Edge geometry builder (curved, seeded)
+// ---------------------------------------------------------------------------
+
+interface EdgeArrays {
+  positionArr: Float32Array;
+  colorArr: Float32Array;
+  sources: Uint32Array;
+  weights: Float32Array;
+  numEdges: number;
+}
+
+const _a = new THREE.Vector3();
+const _b = new THREE.Vector3();
+const _mid = new THREE.Vector3();
+const _dir = new THREE.Vector3();
+const _perp = new THREE.Vector3();
+const _rv = new THREE.Vector3();
+const _ctrl = new THREE.Vector3();
+const _curve = new THREE.QuadraticBezierCurve3(
+  new THREE.Vector3(),
+  new THREE.Vector3(),
+  new THREE.Vector3(),
+);
+
+function buildEdgeArrays(
+  net: NeuralNetwork,
+  positions: Float32Array,
+  edgeWeightThreshold: number,
+): EdgeArrays {
+  const N = net.numNeurons;
+  const M = MAX_NEURONS;
+  const S = CURVE_SEGMENTS;
+  const ew = net.effectiveWeights;
+
+  // First pass: count edges
+  let numEdges = 0;
+  for (let i = 0; i < N; i++)
+    for (let j = 0; j < N; j++)
+      if (i !== j && Math.abs(ew[i * M + j]) > edgeWeightThreshold) numEdges++;
+
+  const vertsPerEdge = S * 2;
+  const positionArr = new Float32Array(numEdges * vertsPerEdge * 3);
+  const colorArr = new Float32Array(numEdges * vertsPerEdge * 3);
+  const sources = new Uint32Array(numEdges);
+  const weights = new Float32Array(numEdges);
+
+  // Second pass: fill geometry
+  let e = 0;
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      if (i === j) continue;
+      const w = ew[i * M + j];
+      if (Math.abs(w) <= edgeWeightThreshold) continue;
+
+      sources[e] = i;
+      weights[e] = Math.abs(w);
+
+      _a.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+      _b.set(positions[j * 3], positions[j * 3 + 1], positions[j * 3 + 2]);
+
+      // Per-edge seeded PRNG for deterministic curve shape
+      const erng = mulberry32(net.seed * 65537 + i * 997 + j);
+
+      _mid.addVectors(_a, _b).multiplyScalar(0.5);
+      _dir.subVectors(_b, _a);
+      const len = _dir.length();
+      _dir.normalize();
+
+      _rv.set(erng() - 0.5, erng() - 0.5, erng() - 0.5).normalize();
+      _perp.crossVectors(_dir, _rv).normalize();
+      if (_perp.lengthSq() < 0.001) {
+        _rv.set(0, 1, 0);
+        _perp.crossVectors(_dir, _rv).normalize();
+      }
+      _ctrl
+        .copy(_mid)
+        .addScaledVector(_perp, len * CURVE_AMOUNT * (erng() * 0.5 + 0.75));
+
+      _curve.v0.copy(_a);
+      _curve.v1.copy(_ctrl);
+      _curve.v2.copy(_b);
+      const pts = _curve.getPoints(S);
+
+      const baseVert = e * vertsPerEdge * 3;
+      for (let s = 0; s < S; s++) {
+        const p0 = pts[s];
+        const p1 = pts[s + 1];
+        const vi = baseVert + s * 6;
+        positionArr[vi] = p0.x;
+        positionArr[vi + 1] = p0.y;
+        positionArr[vi + 2] = p0.z;
+        positionArr[vi + 3] = p1.x;
+        positionArr[vi + 4] = p1.y;
+        positionArr[vi + 5] = p1.z;
+      }
+
+      const y = weights[e];
+      const r = 1,
+        g = 1,
+        bl = 1 - y;
+      for (let s = 0; s < S; s++) {
+        const ci = baseVert + s * 6;
+        colorArr[ci] = r;
+        colorArr[ci + 1] = g;
+        colorArr[ci + 2] = bl;
+        colorArr[ci + 3] = r;
+        colorArr[ci + 4] = g;
+        colorArr[ci + 5] = bl;
+      }
+
+      e++;
+    }
+  }
+
+  return { positionArr, colorArr, sources, weights, numEdges };
+}
+
+// ---------------------------------------------------------------------------
 // Create visualization
 // ---------------------------------------------------------------------------
 
@@ -154,7 +268,7 @@ export function createVisualization(
   container: HTMLElement = document.body,
   edgeWeightThreshold = 0.05,
 ): NetworkVisualization {
-  const N = net.state.numNeurons;
+  const N = net.numNeurons;
 
   // --- Renderer, scene, camera ---
   const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -191,99 +305,47 @@ export function createVisualization(
 
   const bloomPass = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
-    0.2, // strength
-    0.2, // radius
-    0.2, // threshold
+    0.2,
+    0.2,
+    0.2,
   );
   bloomPass.enabled = false;
   composer.addPass(bloomPass);
   composer.addPass(new OutputPass());
 
-  // --- Layout ---
-  const { positions, edges, edgeWeights: edgeWeightsArr } = computeLayout(net, edgeWeightThreshold);
+  // --- Layout (computed once for all MAX_NEURONS) ---
+  const positions = computeLayout(net);
 
   // --- Nodes ---
   let flat = true;
-  let nodeState = createNodeMesh(N, positions, flat);
+  let nodeState = createNodeMesh(positions, N, flat);
   let nodeMesh = nodeState.mesh;
   scene.add(nodeMesh);
 
-  // --- Edges (curved) ---
+  // --- Edges ---
   const S = CURVE_SEGMENTS;
-  const numEdges = edges.length;
-  const vertsPerEdge = S * 2; // LineSegments: each segment = 2 verts
-  const edgePositionArr = new Float32Array(numEdges * vertsPerEdge * 3);
-  const edgeColorArr = new Float32Array(numEdges * vertsPerEdge * 3);
-  const edgeSources = new Uint32Array(numEdges);
+  let edgeData = buildEdgeArrays(net, positions, edgeWeightThreshold);
+  let edgeFlash = new Float64Array(edgeData.numEdges);
+  const fireFlash = new Float64Array(MAX_NEURONS);
 
-  const _a = new THREE.Vector3();
-  const _b = new THREE.Vector3();
-  const _mid = new THREE.Vector3();
-  const _dir = new THREE.Vector3();
-  const _perp = new THREE.Vector3();
-  const _rand = new THREE.Vector3();
-  const _ctrl = new THREE.Vector3();
-  const _curve = new THREE.QuadraticBezierCurve3(new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3());
-
-  for (let e = 0; e < numEdges; e++) {
-    const [ai, bi] = edges[e];
-    edgeSources[e] = ai;
-
-    _a.set(positions[ai * 3], positions[ai * 3 + 1], positions[ai * 3 + 2]);
-    _b.set(positions[bi * 3], positions[bi * 3 + 1], positions[bi * 3 + 2]);
-
-    _mid.addVectors(_a, _b).multiplyScalar(0.5);
-    _dir.subVectors(_b, _a);
-    const len = _dir.length();
-    _dir.normalize();
-
-    _rand.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
-    _perp.crossVectors(_dir, _rand).normalize();
-    if (_perp.lengthSq() < 0.001) {
-      _rand.set(0, 1, 0);
-      _perp.crossVectors(_dir, _rand).normalize();
-    }
-    _ctrl.copy(_mid).addScaledVector(_perp, len * CURVE_AMOUNT * (Math.random() * 0.5 + 0.75));
-
-    _curve.v0.copy(_a);
-    _curve.v1.copy(_ctrl);
-    _curve.v2.copy(_b);
-    const pts = _curve.getPoints(S);
-
-    const baseVert = e * vertsPerEdge * 3;
-    for (let s = 0; s < S; s++) {
-      const p0 = pts[s];
-      const p1 = pts[s + 1];
-      const vi = baseVert + s * 6;
-      edgePositionArr[vi + 0] = p0.x; edgePositionArr[vi + 1] = p0.y; edgePositionArr[vi + 2] = p0.z;
-      edgePositionArr[vi + 3] = p1.x; edgePositionArr[vi + 4] = p1.y; edgePositionArr[vi + 5] = p1.z;
-    }
-
-    const y = edgeWeightsArr[e];
-    const r = 1, g = 1, bl = 1 - y;
-    for (let s = 0; s < S; s++) {
-      const ci = baseVert + s * 6;
-      edgeColorArr[ci + 0] = r; edgeColorArr[ci + 1] = g; edgeColorArr[ci + 2] = bl;
-      edgeColorArr[ci + 3] = r; edgeColorArr[ci + 4] = g; edgeColorArr[ci + 5] = bl;
-    }
-  }
-  const edgeGeo = new THREE.BufferGeometry();
-  edgeGeo.setAttribute("position", new THREE.BufferAttribute(edgePositionArr, 3));
-  const edgeColorAttr = new THREE.BufferAttribute(edgeColorArr, 3);
+  let edgeGeo = new THREE.BufferGeometry();
+  edgeGeo.setAttribute(
+    "position",
+    new THREE.BufferAttribute(edgeData.positionArr, 3),
+  );
+  const edgeColorAttr = new THREE.BufferAttribute(edgeData.colorArr, 3);
   edgeColorAttr.setUsage(THREE.DynamicDrawUsage);
   edgeGeo.setAttribute("color", edgeColorAttr);
+
   const edgeMat = new THREE.LineBasicMaterial({
     vertexColors: true,
     transparent: true,
     opacity: 0.15,
   });
-  const edgeLineSegments = new THREE.LineSegments(edgeGeo, edgeMat);
+  let edgeLineSegments = new THREE.LineSegments(edgeGeo, edgeMat);
   scene.add(edgeLineSegments);
 
-  const edgeFlash = new Float64Array(numEdges);
-  const fireFlash = new Float64Array(N);
-
-  // --- Resize handler ---
+  // --- Resize ---
   function resize() {
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -295,6 +357,7 @@ export function createVisualization(
   }
   window.addEventListener("resize", resize);
 
+  // --- Viz object ---
   const viz: NetworkVisualization = {
     renderer,
     scene,
@@ -308,8 +371,8 @@ export function createVisualization(
     edgeLineSegments,
     edgeSegsPerEdge: S,
     fireFlash,
-    edgeSources,
-    edgeWeights: edgeWeightsArr,
+    edgeSources: edgeData.sources,
+    edgeWeights: edgeData.weights,
     edgeFlash,
 
     updateNodeBillboard() {
@@ -321,16 +384,16 @@ export function createVisualization(
       flat = newFlat;
       viz.flatNodes = flat;
 
-      // Copy instance colors from old mesh before disposing
       const oldColors = nodeMesh.instanceColor
         ? (nodeMesh.instanceColor.array as Float32Array).slice()
         : null;
+      const count = nodeMesh.count;
 
       scene.remove(nodeMesh);
       nodeState.geo.dispose();
       nodeState.mat.dispose();
 
-      nodeState = createNodeMesh(N, positions, flat);
+      nodeState = createNodeMesh(positions, count, flat);
       nodeMesh = nodeState.mesh;
       viz.nodeMesh = nodeMesh;
 
@@ -338,8 +401,53 @@ export function createVisualization(
         (nodeMesh.instanceColor.array as Float32Array).set(oldColors);
         nodeMesh.instanceColor.needsUpdate = true;
       }
-
       scene.add(nodeMesh);
+    },
+
+    setNodeCount(n: number) {
+      nodeMesh.count = n;
+      nodeMesh.instanceMatrix.needsUpdate = true;
+    },
+
+    reLayout(netRef: NeuralNetwork, threshold: number) {
+      const newPos = computeLayout(netRef);
+      positions.set(newPos);
+
+      // Update all node instance matrices with new positions
+      for (let i = 0; i < MAX_NEURONS; i++) {
+        _dummy.position.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+        _dummy.quaternion.identity();
+        _dummy.updateMatrix();
+        nodeMesh.setMatrixAt(i, _dummy.matrix);
+      }
+      nodeMesh.instanceMatrix.needsUpdate = true;
+
+      this.rebuildEdges(netRef, threshold);
+    },
+
+    rebuildEdges(netRef: NeuralNetwork, threshold: number) {
+      scene.remove(edgeLineSegments);
+      edgeGeo.dispose();
+
+      edgeData = buildEdgeArrays(netRef, positions, threshold);
+      edgeFlash = new Float64Array(edgeData.numEdges);
+
+      edgeGeo = new THREE.BufferGeometry();
+      edgeGeo.setAttribute(
+        "position",
+        new THREE.BufferAttribute(edgeData.positionArr, 3),
+      );
+      const colAttr = new THREE.BufferAttribute(edgeData.colorArr, 3);
+      colAttr.setUsage(THREE.DynamicDrawUsage);
+      edgeGeo.setAttribute("color", colAttr);
+
+      edgeLineSegments = new THREE.LineSegments(edgeGeo, edgeMat);
+      scene.add(edgeLineSegments);
+
+      viz.edgeLineSegments = edgeLineSegments;
+      viz.edgeSources = edgeData.sources;
+      viz.edgeWeights = edgeData.weights;
+      viz.edgeFlash = edgeFlash;
     },
 
     resize,
@@ -369,9 +477,9 @@ export function updateColors(
   net: NeuralNetwork,
   flashDecay: number = 0.85,
 ): void {
-  const N = net.state.numNeurons;
-  const activations = net.state.activations;
-  const firing = net.state.firing;
+  const N = net.numNeurons;
+  const activations = net.activations;
+  const firing = net.firing;
   const flash = viz.fireFlash;
 
   for (let i = 0; i < N; i++) {
@@ -391,14 +499,16 @@ export function updateColors(
     viz.nodeMesh.instanceColor.needsUpdate = true;
   }
 
-  const colorAttr = viz.edgeLineSegments.geometry.getAttribute("color") as THREE.BufferAttribute;
+  const colorAttr = viz.edgeLineSegments.geometry.getAttribute(
+    "color",
+  ) as THREE.BufferAttribute;
   const colors = colorAttr.array as Float32Array;
   const eSources = viz.edgeSources;
   const eWeights = viz.edgeWeights;
   const eFlash = viz.edgeFlash;
   const numEdges = eSources.length;
   const S = viz.edgeSegsPerEdge;
-  const stride = S * 2 * 3; // floats per edge in the color buffer
+  const stride = S * 2 * 3;
 
   for (let e = 0; e < numEdges; e++) {
     const src = eSources[e];
@@ -414,8 +524,12 @@ export function updateColors(
     const base = e * stride;
     for (let s = 0; s < S; s++) {
       const ci = base + s * 6;
-      colors[ci + 0] = r; colors[ci + 1] = g; colors[ci + 2] = b;
-      colors[ci + 3] = r; colors[ci + 4] = g; colors[ci + 5] = b;
+      colors[ci] = r;
+      colors[ci + 1] = g;
+      colors[ci + 2] = b;
+      colors[ci + 3] = r;
+      colors[ci + 4] = g;
+      colors[ci + 5] = b;
     }
 
     eFlash[e] *= flashDecay;

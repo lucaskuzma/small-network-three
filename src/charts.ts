@@ -68,11 +68,11 @@ function findOutputConnections(net: NeuralNetwork): {
   outputIdx: number;
   weight: number;
 }[] {
-  const N = net.state.numNeurons;
-  const numReadouts = net.state.numReadouts;
-  const nPer = net.state.nOutputsPerReadout;
-  const numOut = net.state.numOutputs;
-  const ow = net.state.outputWeights;
+  const N = net.numNeurons;
+  const numReadouts = net.numReadouts;
+  const nPer = net.nOutputsPerReadout;
+  const numOut = net.numOutputs;
+  const ow = net.outputWeights;
 
   const raw: { neuronIdx: number; readout: number; outputIdx: number; weight: number }[] = [];
   let maxWeight = 0;
@@ -107,8 +107,8 @@ function anchorLocalY(yBase: number, outputIdx: number, nPer: number): number {
 // ---------------------------------------------------------------------------
 
 export function createReadoutCharts(net: NeuralNetwork): ReadoutCharts {
-  const numReadouts = net.state.numReadouts;
-  const nPer = net.state.nOutputsPerReadout;
+  const numReadouts = net.numReadouts;
+  const nPer = net.nOutputsPerReadout;
 
   const hudScene = new THREE.Scene();
   const w = window.innerWidth;
@@ -259,10 +259,10 @@ export function updateReadoutCharts(
   pushData: boolean,
   flashDecay: number = 0.85,
 ): void {
-  const numReadouts = net.state.numReadouts;
+  const numReadouts = net.numReadouts;
   const nPer = charts.nPerReadout;
-  const outputs = net.state.outputs;
-  const firing = net.state.firing;
+  const outputs = net.outputs;
+  const firing = net.firing;
   const h = charts.camera.top;
   const w = charts.camera.right;
   const groupY = h - MARGIN; // group's screen-space Y origin

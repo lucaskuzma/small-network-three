@@ -1,128 +1,57 @@
-// Default hyperparameters (from Python small-network)
-export const DEFAULT_N_OUTPUTS_PER_READOUT = 5;
+export const MAX_NEURONS = 512;
 export const DEFAULT_NUM_READOUTS = 3;
-export const DEFAULT_NUM_MODULES = 3;
-export const DEFAULT_INTER_MODULE_FACTOR = 0.5;
-export const NEURONS_PER_OUTPUT = 17;
-export const DEFAULT_NUM_NEURONS =
-  DEFAULT_NUM_READOUTS * DEFAULT_N_OUTPUTS_PER_READOUT * NEURONS_PER_OUTPUT; // 255
+export const DEFAULT_N_OUTPUTS_PER_READOUT = 5;
+const OUTPUT_SPARSITY = 0.05;
+const OUTPUT_SCALE = 0.3;
 
-export const DEFAULT_ACTIVATION_LEAK = 0.98;
-export const DEFAULT_REFRACTION_LEAK = 0.75;
+// ---------------------------------------------------------------------------
+// Params
+// ---------------------------------------------------------------------------
 
-export const DEFAULT_NETWORK_SPARSITY = 0.2;
-export const DEFAULT_NETWORK_WEIGHT_SCALE = 0.3;
-export const DEFAULT_WEIGHT_THRESHOLD = 0;
+export interface NetworkParams {
+  numNeurons: number;
+  numModules: number;
+  interModuleFactor: number;
+  sparsity: number;
+  weightScale: number;
+  activationLeak: number;
+  refractionLeak: number;
+  refractionPeriod: number;
+  refractionVariation: number;
+}
 
-export const DEFAULT_OUTPUT_SPARSITY = 0.05;
-export const DEFAULT_OUTPUT_WEIGHT_SCALE = 0.3;
+export const DEFAULT_PARAMS: NetworkParams = {
+  numNeurons: DEFAULT_NUM_READOUTS * DEFAULT_N_OUTPUTS_PER_READOUT * 17, // 255
+  numModules: 3,
+  interModuleFactor: 0.5,
+  sparsity: 0.2,
+  weightScale: 0.3,
+  activationLeak: 0.98,
+  refractionLeak: 0.75,
+  refractionPeriod: 2,
+  refractionVariation: 62,
+};
 
-export const DEFAULT_REFRACTION_PERIOD = 2;
-export const DEFAULT_REFRACTION_VARIATION = 62;
+// ---------------------------------------------------------------------------
+// Seeded PRNG (mulberry32)
+// ---------------------------------------------------------------------------
+
+export function mulberry32(seed: number): () => number {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function randn(): number {
-  // Box-Muller transform
-  const u1 = Math.random();
-  const u2 = Math.random();
-  return Math.sqrt(-2 * Math.log(u1 || 1e-30)) * Math.cos(2 * Math.PI * u2);
-}
-
 function clip(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
-}
-
-/** Matrix-vector product: result[i] = sum_j mat[i * cols + j] * vec[j] */
-function matVecTranspose(
-  mat: Float64Array,
-  rows: number,
-  cols: number,
-  vec: Float64Array | Uint8Array,
-): Float64Array {
-  // Computes mat^T @ vec  =>  out[j] = sum_i mat[i*cols + j] * vec[i]
-  const out = new Float64Array(cols);
-  for (let i = 0; i < rows; i++) {
-    const vi = vec[i];
-    if (vi === 0) continue;
-    const base = i * cols;
-    for (let j = 0; j < cols; j++) {
-      out[j] += mat[base + j] * vi;
-    }
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// NeuralNetworkState
-// ---------------------------------------------------------------------------
-
-export interface NeuralNetworkStateConfig {
-  numNeurons?: number;
-  numReadouts?: number;
-  nOutputsPerReadout?: number;
-}
-
-export class NeuralNetworkState {
-  numNeurons: number;
-  numReadouts: number;
-  nOutputsPerReadout: number;
-  numOutputs: number;
-
-  networkWeights: Float64Array; // N x N row-major
-  thresholds: Float64Array;
-  thresholdsCurrent: Float64Array;
-  thresholdVariationRanges: Float64Array;
-  thresholdVariationPeriods: Float64Array;
-  outputWeights: Float64Array; // N x numOutputs row-major
-  activations: Float64Array;
-  firing: Uint8Array;
-  outputs: Float64Array;
-  refractoryCounters: Int32Array;
-  refractionPeriod: Int32Array;
-
-  useActivationLeak = false;
-  activationLeak = DEFAULT_ACTIVATION_LEAK;
-  refractionLeak = DEFAULT_REFRACTION_LEAK;
-  useRefractionDecay = false;
-  useTanhActivation = false;
-  weightThreshold = 0;
-
-  constructor(config: NeuralNetworkStateConfig = {}) {
-    const N = (this.numNeurons = config.numNeurons ?? DEFAULT_NUM_NEURONS);
-    this.numReadouts = config.numReadouts ?? DEFAULT_NUM_READOUTS;
-    this.nOutputsPerReadout =
-      config.nOutputsPerReadout ?? DEFAULT_N_OUTPUTS_PER_READOUT;
-    this.numOutputs = this.numReadouts * this.nOutputsPerReadout;
-
-    this.networkWeights = new Float64Array(N * N);
-    this.thresholds = new Float64Array(N).fill(0.5);
-    this.thresholdsCurrent = new Float64Array(N).fill(0.5);
-    this.thresholdVariationRanges = new Float64Array(N);
-    this.thresholdVariationPeriods = new Float64Array(N);
-    this.outputWeights = new Float64Array(N * this.numOutputs);
-    for (let i = 0; i < Math.min(N, this.numOutputs); i++) {
-      this.outputWeights[i * this.numOutputs + i] = 1.0;
-    }
-    this.activations = new Float64Array(N);
-    this.firing = new Uint8Array(N);
-    this.outputs = new Float64Array(this.numOutputs);
-    this.refractoryCounters = new Int32Array(N);
-    this.refractionPeriod = new Int32Array(N);
-  }
-
-  getReadoutOutputs(): Float64Array[] {
-    const result: Float64Array[] = [];
-    for (let r = 0; r < this.numReadouts; r++) {
-      const start = r * this.nOutputsPerReadout;
-      result.push(
-        this.outputs.slice(start, start + this.nOutputsPerReadout) as Float64Array,
-      );
-    }
-    return result;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -130,164 +59,310 @@ export class NeuralNetworkState {
 // ---------------------------------------------------------------------------
 
 export class NeuralNetwork {
-  state: NeuralNetworkState;
-  moduleAssignments: Int32Array | null = null;
+  readonly numReadouts = DEFAULT_NUM_READOUTS;
+  readonly nOutputsPerReadout = DEFAULT_N_OUTPUTS_PER_READOUT;
+  readonly numOutputs = DEFAULT_NUM_READOUTS * DEFAULT_N_OUTPUTS_PER_READOUT;
 
-  constructor(config: NeuralNetworkStateConfig = {}) {
-    this.state = new NeuralNetworkState(config);
+  seed: number;
+  params: NetworkParams;
+
+  // Base random arrays — regenerated only on reseed
+  readonly baseWeights: Float64Array;
+  readonly sparsityRank: Float64Array;
+  readonly baseModuleRank: Float64Array;
+  readonly baseThresholds: Float64Array;
+  readonly baseRefractionVar: Float64Array;
+  readonly baseOutputMagnitude: Float64Array;
+  readonly outputSparsityRank: Float64Array;
+
+  // Derived — recomputed when params change
+  readonly effectiveWeights: Float64Array;
+  readonly moduleAssignments: Int32Array;
+  readonly outputWeights: Float64Array;
+  readonly thresholds: Float64Array;
+  readonly thresholdsCurrent: Float64Array;
+  readonly refractionPeriods: Int32Array;
+
+  // Simulation state
+  readonly activations: Float64Array;
+  readonly firing: Uint8Array;
+  readonly outputs: Float64Array;
+  readonly refractoryCounters: Int32Array;
+
+  get numNeurons(): number {
+    return this.params.numNeurons;
   }
 
-  // -- Weight threshold helper ------------------------------------------------
+  constructor(seed: number, params?: Partial<NetworkParams>) {
+    this.seed = seed;
+    this.params = { ...DEFAULT_PARAMS, ...params };
 
-  private applyWeightThreshold(
-    src: Float64Array,
-    dst: Float64Array,
-    len: number,
-  ): void {
-    const t = this.state.weightThreshold;
-    if (t <= 0) {
-      dst.set(src);
-      return;
+    const M = MAX_NEURONS;
+    const K = this.numOutputs;
+
+    this.baseWeights = new Float64Array(M * M);
+    this.sparsityRank = new Float64Array(M * M);
+    this.baseModuleRank = new Float64Array(M);
+    this.baseThresholds = new Float64Array(M);
+    this.baseRefractionVar = new Float64Array(M);
+    this.baseOutputMagnitude = new Float64Array(M * K);
+    this.outputSparsityRank = new Float64Array(M * K);
+
+    this.effectiveWeights = new Float64Array(M * M);
+    this.moduleAssignments = new Int32Array(M);
+    this.outputWeights = new Float64Array(M * K);
+    this.thresholds = new Float64Array(M);
+    this.thresholdsCurrent = new Float64Array(M);
+    this.refractionPeriods = new Int32Array(M);
+
+    this.activations = new Float64Array(M);
+    this.firing = new Uint8Array(M);
+    this.outputs = new Float64Array(K);
+    this.refractoryCounters = new Int32Array(M);
+
+    this.regenerateBase();
+    this.recomputeDerived();
+    this.kickstart();
+  }
+
+  // -- Seed management -------------------------------------------------------
+
+  reseed(newSeed: number): void {
+    this.seed = newSeed;
+    this.regenerateBase();
+    this.recomputeDerived();
+    this.resetState();
+    this.kickstart();
+  }
+
+  private regenerateBase(): void {
+    const rng = mulberry32(this.seed);
+    const M = MAX_NEURONS;
+    const K = this.numOutputs;
+
+    for (let i = 0; i < M * M; i++) {
+      const u1 = rng();
+      const u2 = rng();
+      this.baseWeights[i] = clip(
+        Math.sqrt(-2 * Math.log(u1 || 1e-30)) * Math.cos(2 * Math.PI * u2),
+        -1,
+        1,
+      );
     }
-    for (let i = 0; i < len; i++) {
-      dst[i] = Math.abs(src[i]) >= t ? src[i] : 0;
+    for (let i = 0; i < M * M; i++) this.sparsityRank[i] = rng();
+    for (let i = 0; i < M; i++) this.baseModuleRank[i] = rng();
+    for (let i = 0; i < M; i++) this.baseThresholds[i] = rng();
+    for (let i = 0; i < M; i++) this.baseRefractionVar[i] = rng();
+    for (let i = 0; i < M * K; i++) this.baseOutputMagnitude[i] = rng();
+    for (let i = 0; i < M * K; i++) this.outputSparsityRank[i] = rng();
+  }
+
+  // -- Derived recomputation -------------------------------------------------
+
+  recomputeDerived(): void {
+    this.recomputeModules();
+    this.recomputeEffectiveWeights();
+    this.recomputeOutputWeights();
+    this.recomputeThresholds();
+    this.recomputeRefractionPeriods();
+  }
+
+  private recomputeModules(): void {
+    const nm = this.params.numModules;
+    for (let i = 0; i < MAX_NEURONS; i++) {
+      this.moduleAssignments[i] =
+        nm <= 1 ? 0 : Math.min(Math.floor(this.baseModuleRank[i] * nm), nm - 1);
     }
   }
 
-  // -- Tick -------------------------------------------------------------------
+  private recomputeEffectiveWeights(): void {
+    const N = this.numNeurons;
+    const M = MAX_NEURONS;
+    const { sparsity, weightScale, numModules, interModuleFactor } = this.params;
+    const interSparsity = sparsity * interModuleFactor;
 
-  tick(step: number): void {
-    const s = this.state;
-    const N = s.numNeurons;
-
-    // 1. Effective weights (apply threshold)
-    const effW = new Float64Array(N * N);
-    this.applyWeightThreshold(s.networkWeights, effW, N * N);
-
-    // incoming[i] = effW^T @ firing  (effW is NxN row-major)
-    const incoming = matVecTranspose(effW, N, N, s.firing);
-
-    // 2. Refractory gating
-    const canReceive = new Uint8Array(N);
-    if (s.useRefractionDecay) {
-      for (let i = 0; i < N; i++) canReceive[i] = s.refractoryCounters[i] === 0 ? 1 : 0;
-    } else {
-      canReceive.fill(1);
-    }
-
-    // 3. Update activations
-    const newAct = Float64Array.from(s.activations);
-    if (s.useTanhActivation) {
-      for (let i = 0; i < N; i++) {
-        if (canReceive[i]) {
-          newAct[i] = (Math.tanh(s.activations[i] + incoming[i]) + 1) / 2;
-        }
-      }
-    } else {
-      for (let i = 0; i < N; i++) {
-        if (canReceive[i]) {
-          newAct[i] = clip(s.activations[i] + incoming[i], 0, 1);
+    this.effectiveWeights.fill(0);
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < N; j++) {
+        if (i === j) continue;
+        const idx = i * M + j;
+        const same =
+          numModules <= 1 ||
+          this.moduleAssignments[i] === this.moduleAssignments[j];
+        if (this.sparsityRank[idx] < (same ? sparsity : interSparsity)) {
+          this.effectiveWeights[idx] = this.baseWeights[idx] * weightScale;
         }
       }
     }
+  }
 
-    // 4. Firing
+  private recomputeOutputWeights(): void {
+    const N = this.numNeurons;
+    const K = this.numOutputs;
+
+    this.outputWeights.fill(0);
+    for (let i = 0; i < N; i++) {
+      for (let k = 0; k < K; k++) {
+        const idx = i * K + k;
+        if (this.outputSparsityRank[idx] < OUTPUT_SPARSITY) {
+          this.outputWeights[idx] = this.baseOutputMagnitude[idx] * OUTPUT_SCALE;
+        }
+      }
+    }
+  }
+
+  private recomputeThresholds(): void {
+    for (let i = 0; i < MAX_NEURONS; i++) {
+      this.thresholds[i] = this.baseThresholds[i];
+      this.thresholdsCurrent[i] = this.baseThresholds[i];
+    }
+  }
+
+  private recomputeRefractionPeriods(): void {
+    const { refractionPeriod, refractionVariation } = this.params;
+    for (let i = 0; i < MAX_NEURONS; i++) {
+      this.refractionPeriods[i] =
+        refractionPeriod + Math.floor(this.baseRefractionVar[i] * refractionVariation);
+    }
+  }
+
+  // -- State management ------------------------------------------------------
+
+  resetState(): void {
+    this.activations.fill(0);
+    this.firing.fill(0);
+    this.outputs.fill(0);
+    this.refractoryCounters.fill(0);
+  }
+
+  kickstart(): void {
+    if (this.params.numModules > 1) {
+      this.manualActivateMostWeightedPerModule(1.0);
+    } else {
+      this.manualActivateMostWeighted(1.0);
+    }
+  }
+
+  // -- Live parameter updates ------------------------------------------------
+
+  updateParams(
+    changes: Partial<NetworkParams>,
+  ): { weightsChanged: boolean; numNeuronsChanged: boolean } {
+    const oldN = this.numNeurons;
+    Object.assign(this.params, changes);
+
+    const weightsChanged =
+      "numNeurons" in changes ||
+      "numModules" in changes ||
+      "interModuleFactor" in changes ||
+      "sparsity" in changes ||
+      "weightScale" in changes;
+
+    if ("numModules" in changes || "numNeurons" in changes) {
+      this.recomputeModules();
+    }
+    if (weightsChanged) {
+      this.recomputeEffectiveWeights();
+    }
+    if ("numNeurons" in changes) {
+      this.recomputeOutputWeights();
+    }
+    if ("refractionPeriod" in changes || "refractionVariation" in changes) {
+      this.recomputeRefractionPeriods();
+    }
+
+    return { weightsChanged, numNeuronsChanged: this.numNeurons !== oldN };
+  }
+
+  // -- Tick ------------------------------------------------------------------
+
+  tick(_step: number): void {
+    const N = this.numNeurons;
+    const M = MAX_NEURONS;
+
+    // 1. Incoming activation: incoming[j] = Σ_i ew[i,j] * firing[i]
+    const incoming = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      if (this.firing[i] === 0) continue;
+      const base = i * M;
+      for (let j = 0; j < N; j++) {
+        incoming[j] += this.effectiveWeights[base + j];
+      }
+    }
+
+    // 2. Update activations (gated by refractory)
+    const newAct = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      newAct[i] =
+        this.refractoryCounters[i] === 0
+          ? clip(this.activations[i] + incoming[i], 0, 1)
+          : this.activations[i];
+    }
+
+    // 3. Firing
     const newFiring = new Uint8Array(N);
     for (let i = 0; i < N; i++) {
-      newFiring[i] = canReceive[i] && newAct[i] >= s.thresholdsCurrent[i] ? 1 : 0;
+      newFiring[i] =
+        this.refractoryCounters[i] === 0 &&
+        newAct[i] >= this.thresholdsCurrent[i]
+          ? 1
+          : 0;
     }
 
-    // 5. Post-fire state
-    const newRefrac = Int32Array.from(s.refractoryCounters);
-    if (s.useRefractionDecay) {
-      for (let i = 0; i < N; i++) {
-        if (newFiring[i]) newRefrac[i] = s.refractionPeriod[i];
-      }
-    } else {
-      for (let i = 0; i < N; i++) {
-        if (newFiring[i]) newAct[i] = 0;
-      }
-    }
-
-    // 6. Refraction leak on neurons that WERE refractory
-    if (s.useRefractionDecay) {
-      for (let i = 0; i < N; i++) {
-        if (s.refractoryCounters[i] > 0) {
-          newAct[i] *= s.refractionLeak;
-        }
-      }
-    }
-
-    // 7. Threshold variation
-    let anyVariation = false;
+    // 4. New refractory counters
+    const newRefrac = new Int32Array(N);
     for (let i = 0; i < N; i++) {
-      if (s.thresholdVariationPeriods[i] > 0) {
-        anyVariation = true;
-        break;
-      }
-    }
-    if (anyVariation) {
-      for (let i = 0; i < N; i++) {
-        const p = s.thresholdVariationPeriods[i];
-        if (p > 0) {
-          const phase = (step * 2 * Math.PI) / p;
-          const variation = Math.sin(phase) * s.thresholdVariationRanges[i];
-          s.thresholdsCurrent[i] = clip(s.thresholds[i] + variation, 0, 1);
-        }
-      }
+      newRefrac[i] = newFiring[i]
+        ? this.refractionPeriods[i]
+        : this.refractoryCounters[i];
     }
 
-    // 8. Outputs
-    const newOut = new Float64Array(s.numOutputs);
-    for (let i = 0; i < s.numOutputs; i++) {
-      newOut[i] = s.outputs[i] * s.refractionLeak;
-    }
-    const effOW = new Float64Array(N * s.numOutputs);
-    this.applyWeightThreshold(s.outputWeights, effOW, N * s.numOutputs);
-    // effOW^T @ newFiring
-    const outAdd = matVecTranspose(effOW, N, s.numOutputs, newFiring);
-    for (let i = 0; i < s.numOutputs; i++) {
-      newOut[i] = clip(newOut[i] + outAdd[i], 0, 1);
+    // 5. Refractory leak (applied based on OLD refractory state)
+    const refLeak = this.params.refractionLeak;
+    for (let i = 0; i < N; i++) {
+      if (this.refractoryCounters[i] > 0) newAct[i] *= refLeak;
     }
 
-    // 9. Activation leak
-    if (s.useActivationLeak) {
-      for (let i = 0; i < N; i++) newAct[i] *= s.activationLeak;
+    // 6. Outputs (decay + new firing contributions)
+    const K = this.numOutputs;
+    for (let i = 0; i < K; i++) this.outputs[i] *= refLeak;
+    for (let i = 0; i < N; i++) {
+      if (newFiring[i] === 0) continue;
+      const base = i * K;
+      for (let k = 0; k < K; k++) this.outputs[k] += this.outputWeights[base + k];
     }
+    for (let i = 0; i < K; i++) this.outputs[i] = clip(this.outputs[i], 0, 1);
 
-    // 10. Decrement refractory
-    if (s.useRefractionDecay) {
-      for (let i = 0; i < N; i++) {
-        newRefrac[i] = Math.max(0, newRefrac[i] - 1);
-      }
+    // 7. Activation leak
+    const aLeak = this.params.activationLeak;
+    for (let i = 0; i < N; i++) newAct[i] *= aLeak;
+
+    // 8. Decrement refractory
+    for (let i = 0; i < N; i++) newRefrac[i] = Math.max(0, newRefrac[i] - 1);
+
+    // 9. Commit
+    for (let i = 0; i < N; i++) {
+      this.activations[i] = newAct[i];
+      this.firing[i] = newFiring[i];
+      this.refractoryCounters[i] = newRefrac[i];
     }
-
-    // Commit
-    s.activations = newAct;
-    s.firing = newFiring;
-    s.outputs = newOut;
-    if (s.useRefractionDecay) s.refractoryCounters = newRefrac;
   }
 
-  // -- Manual activation ------------------------------------------------------
-
-  manualTrigger(idx: number): void {
-    this.state.activations[idx] = 1;
-  }
+  // -- Manual activation -----------------------------------------------------
 
   manualActivate(idx: number, value: number): void {
-    this.state.activations[idx] = clip(this.state.activations[idx] + value, 0, 1);
+    this.activations[idx] = clip(this.activations[idx] + value, 0, 1);
   }
 
   manualActivateMostWeighted(value: number): number {
-    const N = this.state.numNeurons;
-    const w = this.state.networkWeights;
+    const N = this.numNeurons;
+    const M = MAX_NEURONS;
     let bestIdx = 0;
     let bestSum = -Infinity;
     for (let i = 0; i < N; i++) {
       let sum = 0;
-      const base = i * N;
-      for (let j = 0; j < N; j++) sum += w[base + j];
+      const base = i * M;
+      for (let j = 0; j < N; j++) sum += this.effectiveWeights[base + j];
       if (sum > bestSum) {
         bestSum = sum;
         bestIdx = i;
@@ -298,26 +373,24 @@ export class NeuralNetwork {
   }
 
   manualActivateMostWeightedPerModule(value: number): number[] {
-    if (!this.moduleAssignments) throw new Error("No module assignments");
-    const N = this.state.numNeurons;
-    const w = this.state.networkWeights;
+    const N = this.numNeurons;
+    const M = MAX_NEURONS;
 
-    const totalWeights = new Float64Array(N);
+    const totals = new Float64Array(N);
     for (let i = 0; i < N; i++) {
       let sum = 0;
-      const base = i * N;
-      for (let j = 0; j < N; j++) sum += w[base + j];
-      totalWeights[i] = sum;
+      const base = i * M;
+      for (let j = 0; j < N; j++) sum += this.effectiveWeights[base + j];
+      totals[i] = sum;
     }
 
-    const numModules = this.moduleAssignments.reduce((a, b) => Math.max(a, b), 0) + 1;
     const activated: number[] = [];
-    for (let m = 0; m < numModules; m++) {
+    for (let m = 0; m < this.params.numModules; m++) {
       let bestIdx = -1;
       let bestW = -Infinity;
       for (let i = 0; i < N; i++) {
-        if (this.moduleAssignments[i] === m && totalWeights[i] > bestW) {
-          bestW = totalWeights[i];
+        if (this.moduleAssignments[i] === m && totals[i] > bestW) {
+          bestW = totals[i];
           bestIdx = i;
         }
       }
@@ -329,186 +402,13 @@ export class NeuralNetwork {
     return activated;
   }
 
-  // -- Configuration ----------------------------------------------------------
-
-  clearFiring(): void {
-    this.state.firing.fill(0);
-    this.state.outputs.fill(0);
-  }
-
-  enableActivationLeak(leak: number = DEFAULT_ACTIVATION_LEAK): void {
-    this.state.useActivationLeak = true;
-    this.state.activationLeak = clip(leak, 0, 1);
-  }
-
-  disableActivationLeak(): void {
-    this.state.useActivationLeak = false;
-  }
-
-  setWeightThreshold(threshold: number = 0.05): void {
-    this.state.weightThreshold = Math.max(0, threshold);
-  }
-
-  enableRefractionDecay(
-    refractionPeriod: number = DEFAULT_REFRACTION_PERIOD,
-    refractionLeak: number = DEFAULT_REFRACTION_LEAK,
-    refractionVariation: number = DEFAULT_REFRACTION_VARIATION,
-  ): void {
-    const s = this.state;
-    s.refractionLeak = clip(refractionLeak, 0, 1);
-    s.useRefractionDecay = true;
-    s.refractionPeriod = new Int32Array(s.numNeurons).fill(refractionPeriod);
-    if (refractionVariation > 0) {
-      for (let i = 0; i < s.numNeurons; i++) {
-        s.refractionPeriod[i] += Math.floor(Math.random() * refractionVariation);
-      }
-    }
-  }
-
-  disableRefractionDecay(): void {
-    this.state.useRefractionDecay = false;
-  }
-
-  // -- Weight randomization ---------------------------------------------------
-
-  randomizeWeights(
-    sparsity = DEFAULT_NETWORK_SPARSITY,
-    scale = DEFAULT_NETWORK_WEIGHT_SCALE,
-    numModules = 1,
-    interModuleFactor?: number,
-  ): void {
-    const N = this.state.numNeurons;
-
-    // Gaussian weights clipped to [-1, 1]
-    for (let i = 0; i < N * N; i++) {
-      this.state.networkWeights[i] = clip(randn() * scale, -1, 1);
-    }
-
-    // Sparsity mask
-    if (numModules <= 1) {
-      for (let i = 0; i < N * N; i++) {
-        if (Math.random() >= sparsity) this.state.networkWeights[i] = 0;
-      }
-    } else {
-      if (interModuleFactor == null)
-        throw new Error("interModuleFactor required when numModules > 1");
-      const moduleSize = Math.floor(N / numModules);
-      const interSparsity = sparsity * interModuleFactor;
-      const mask = new Uint8Array(N * N);
-
-      for (let m = 0; m < numModules; m++) {
-        const start = m * moduleSize;
-        const end = m < numModules - 1 ? (m + 1) * moduleSize : N;
-        // Intra-module
-        for (let i = start; i < end; i++)
-          for (let j = start; j < end; j++)
-            if (Math.random() < sparsity) mask[i * N + j] = 1;
-        // Inter-module
-        for (let m2 = 0; m2 < numModules; m2++) {
-          if (m2 === m) continue;
-          const s2 = m2 * moduleSize;
-          const e2 = m2 < numModules - 1 ? (m2 + 1) * moduleSize : N;
-          for (let i = start; i < end; i++)
-            for (let j = s2; j < e2; j++)
-              if (Math.random() < interSparsity) mask[i * N + j] = 1;
-        }
-      }
-      for (let i = 0; i < N * N; i++) {
-        if (!mask[i]) this.state.networkWeights[i] = 0;
-      }
-    }
-
-    // No self-connections
-    for (let i = 0; i < N; i++) this.state.networkWeights[i * N + i] = 0;
-
-    // Store module assignments
-    if (numModules > 1) {
-      const moduleSize = Math.floor(N / numModules);
-      this.moduleAssignments = new Int32Array(N);
-      for (let m = 0; m < numModules; m++) {
-        const start = m * moduleSize;
-        const end = m < numModules - 1 ? (m + 1) * moduleSize : N;
-        for (let i = start; i < end; i++) this.moduleAssignments[i] = m;
-      }
-    }
-  }
-
-  randomizeOutputWeights(
-    sparsity = DEFAULT_OUTPUT_SPARSITY,
-    scale = DEFAULT_OUTPUT_WEIGHT_SCALE,
-  ): void {
-    const N = this.state.numNeurons;
-    const K = this.state.numOutputs;
-    for (let i = 0; i < N * K; i++) {
-      this.state.outputWeights[i] =
-        Math.random() < sparsity ? Math.random() * scale : 0;
-    }
-  }
-
-  randomizeThresholds(): void {
-    const N = this.state.numNeurons;
-    for (let i = 0; i < N; i++) {
-      const v = Math.random();
-      this.state.thresholds[i] = v;
-      this.state.thresholdsCurrent[i] = v;
-    }
-  }
-
-  randomizeThresholdVariations(range = 0.1, period = 8): void {
-    const N = this.state.numNeurons;
-    for (let i = 0; i < N; i++) {
-      this.state.thresholdVariationRanges[i] = Math.random() * range;
-      this.state.thresholdVariationPeriods[i] =
-        period > 0 ? Math.floor(Math.random() * period) : 0;
-    }
-  }
-
-  getSpectralRadius(): number {
-    // Simplified: compute power iteration estimate for largest eigenvalue magnitude
-    const N = this.state.numNeurons;
-    const w = this.state.networkWeights;
-    let vec = new Float64Array(N);
-    for (let i = 0; i < N; i++) vec[i] = randn();
-
-    // Normalize
-    let norm = 0;
-    for (let i = 0; i < N; i++) norm += vec[i] * vec[i];
-    norm = Math.sqrt(norm);
-    for (let i = 0; i < N; i++) vec[i] /= norm;
-
-    let eigenvalue = 0;
-    for (let iter = 0; iter < 100; iter++) {
-      const next = new Float64Array(N);
-      for (let i = 0; i < N; i++) {
-        let sum = 0;
-        const base = i * N;
-        for (let j = 0; j < N; j++) sum += w[base + j] * vec[j];
-        next[i] = sum;
-      }
-      norm = 0;
-      for (let i = 0; i < N; i++) norm += next[i] * next[i];
-      norm = Math.sqrt(norm);
-      eigenvalue = norm;
-      if (norm > 0) for (let i = 0; i < N; i++) next[i] /= norm;
-      vec = next;
-    }
-    return eigenvalue;
-  }
-
-  clear(): void {
-    this.state = new NeuralNetworkState({
-      numNeurons: this.state.numNeurons,
-      numReadouts: this.state.numReadouts,
-      nOutputsPerReadout: this.state.nOutputsPerReadout,
-    });
-  }
-
-  /** Count non-zero entries in the network weight matrix. */
   connectionCount(): number {
+    const N = this.numNeurons;
+    const M = MAX_NEURONS;
     let count = 0;
-    for (let i = 0; i < this.state.networkWeights.length; i++) {
-      if (this.state.networkWeights[i] !== 0) count++;
-    }
+    for (let i = 0; i < N; i++)
+      for (let j = 0; j < N; j++)
+        if (this.effectiveWeights[i * M + j] !== 0) count++;
     return count;
   }
 }
