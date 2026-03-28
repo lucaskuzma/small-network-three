@@ -10,6 +10,7 @@ const CHART_HEIGHT = 48;
 const CHART_GAP = 8;
 const BUFFER_LEN = 300;
 const MARGIN = 16;
+const ANCHOR_OFFSET = 16; // px to the right of chart edge
 
 const TRACE_COLORS = [
   0x4fc3f7, // light blue
@@ -31,54 +32,74 @@ interface TraceData {
 interface ConnectorInfo {
   neuronIdx: number;
   readout: number;
-  weight: number; // absolute output weight sum (Y channel)
+  outputIdx: number;
+  weight: number; // absolute output weight, normalized [0,1]
   line: THREE.Line;
-  flash: number; // cyan flash, decays per frame
+  flash: number;
+}
+
+/** Anchor-to-chart "write line" per output channel */
+interface WriteLineInfo {
+  readout: number;
+  outputIdx: number;
+  line: THREE.Line;
 }
 
 export interface ReadoutCharts {
   scene: THREE.Scene;
   camera: THREE.OrthographicCamera;
   connectors: ConnectorInfo[];
+  writeLines: WriteLineInfo[];
   traces: TraceData[][];
   yBases: number[];
   group: THREE.Group;
+  nPerReadout: number;
   resize(w: number, h: number): void;
   dispose(): void;
 }
 
 // ---------------------------------------------------------------------------
-// Find ALL neurons with non-zero output weights per readout
+// Find all per-output neuron connections
 // ---------------------------------------------------------------------------
 
-function findAllReadoutNeurons(net: NeuralNetwork): { neuronIdx: number; readout: number; weight: number }[] {
+function findOutputConnections(net: NeuralNetwork): {
+  neuronIdx: number;
+  readout: number;
+  outputIdx: number;
+  weight: number;
+}[] {
   const N = net.state.numNeurons;
   const numReadouts = net.state.numReadouts;
   const nPer = net.state.nOutputsPerReadout;
   const numOut = net.state.numOutputs;
   const ow = net.state.outputWeights;
 
-  const raw: { neuronIdx: number; readout: number; weight: number }[] = [];
+  const raw: { neuronIdx: number; readout: number; outputIdx: number; weight: number }[] = [];
   let maxWeight = 0;
   for (let r = 0; r < numReadouts; r++) {
-    const colStart = r * nPer;
-    const colEnd = colStart + nPer;
-    for (let i = 0; i < N; i++) {
-      let sum = 0;
-      for (let c = colStart; c < colEnd; c++) {
-        sum += Math.abs(ow[i * numOut + c]);
-      }
-      if (sum > 0) {
-        raw.push({ neuronIdx: i, readout: r, weight: sum });
-        if (sum > maxWeight) maxWeight = sum;
+    for (let o = 0; o < nPer; o++) {
+      const col = r * nPer + o;
+      for (let i = 0; i < N; i++) {
+        const w = Math.abs(ow[i * numOut + col]);
+        if (w > 0) {
+          raw.push({ neuronIdx: i, readout: r, outputIdx: o, weight: w });
+          if (w > maxWeight) maxWeight = w;
+        }
       }
     }
   }
-  // Normalize weights to [0, 1]
   if (maxWeight > 0) {
     for (const entry of raw) entry.weight /= maxWeight;
   }
   return raw;
+}
+
+// ---------------------------------------------------------------------------
+// Anchor Y position for a given output within a chart (group-local coords)
+// ---------------------------------------------------------------------------
+
+function anchorLocalY(yBase: number, outputIdx: number, nPer: number): number {
+  return yBase - CHART_HEIGHT * ((outputIdx + 0.5) / nPer);
 }
 
 // ---------------------------------------------------------------------------
@@ -150,18 +171,17 @@ export function createReadoutCharts(net: NeuralNetwork): ReadoutCharts {
     traces.push(readoutTraces);
   }
 
-  // All readout neurons with non-zero output weights
-  const neuronReadoutPairs = findAllReadoutNeurons(net);
+  // --- Neuron → anchor connectors (per individual output weight) ---
+  const outputConns = findOutputConnections(net);
 
   const connectors: ConnectorInfo[] = [];
-  for (const { neuronIdx, readout, weight } of neuronReadoutPairs) {
+  for (const { neuronIdx, readout, outputIdx, weight } of outputConns) {
     const geo = new THREE.BufferGeometry();
     const posArr = new Float32Array(6);
     const posAttr = new THREE.BufferAttribute(posArr, 3);
     posAttr.setUsage(THREE.DynamicDrawUsage);
     geo.setAttribute("position", posAttr);
 
-    // Per-vertex color (same CMYK scheme as network edges)
     const colArr = new Float32Array(6);
     const colAttr = new THREE.BufferAttribute(colArr, 3);
     colAttr.setUsage(THREE.DynamicDrawUsage);
@@ -174,8 +194,29 @@ export function createReadoutCharts(net: NeuralNetwork): ReadoutCharts {
     });
     const line = new THREE.Line(geo, mat);
     hudScene.add(line);
-    connectors.push({ neuronIdx, readout, weight, line, flash: 0 });
+    connectors.push({ neuronIdx, readout, outputIdx, weight, line, flash: 0 });
     disposables.push({ geo, mat });
+  }
+
+  // --- Anchor → chart-edge "write lines" (one per output channel, 15 total) ---
+  const writeLines: WriteLineInfo[] = [];
+  for (let r = 0; r < numReadouts; r++) {
+    for (let o = 0; o < nPer; o++) {
+      const geo = new THREE.BufferGeometry();
+      const posArr = new Float32Array(6);
+      const posAttr = new THREE.BufferAttribute(posArr, 3);
+      posAttr.setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute("position", posAttr);
+      const mat = new THREE.LineBasicMaterial({
+        color: TRACE_COLORS[o % TRACE_COLORS.length],
+        transparent: true,
+        opacity: 0.6,
+      });
+      const line = new THREE.Line(geo, mat);
+      hudScene.add(line);
+      writeLines.push({ readout: r, outputIdx: o, line });
+      disposables.push({ geo, mat });
+    }
   }
 
   function resize(newW: number, newH: number) {
@@ -189,9 +230,11 @@ export function createReadoutCharts(net: NeuralNetwork): ReadoutCharts {
     scene: hudScene,
     camera: ortho,
     connectors,
+    writeLines,
     traces,
     yBases,
     group,
+    nPerReadout: nPer,
     resize,
     dispose() {
       for (const { geo, mat } of disposables) {
@@ -217,11 +260,14 @@ export function updateReadoutCharts(
   flashDecay: number = 0.85,
 ): void {
   const numReadouts = net.state.numReadouts;
-  const nPer = net.state.nOutputsPerReadout;
+  const nPer = charts.nPerReadout;
   const outputs = net.state.outputs;
   const firing = net.state.firing;
   const h = charts.camera.top;
+  const w = charts.camera.right;
+  const groupY = h - MARGIN; // group's screen-space Y origin
 
+  // --- Push trace data ---
   if (pushData) {
     for (let r = 0; r < numReadouts; r++) {
       const yBase = charts.yBases[r];
@@ -240,16 +286,18 @@ export function updateReadoutCharts(
     }
   }
 
-  // Update all connector lines (position + CMYK color)
-  const w = charts.camera.right;
+  // Screen-space x positions
+  const chartRightX = MARGIN + CHART_WIDTH;
+  const anchorX = chartRightX + ANCHOR_OFFSET;
+
+  // --- Update neuron → anchor connectors ---
   for (const conn of charts.connectors) {
-    const { neuronIdx, readout, weight, line } = conn;
+    const { neuronIdx, readout, outputIdx, weight, line } = conn;
     const yBase = charts.yBases[readout];
 
-    // Fire flash: set to 1 when source neuron fires, decay each frame
     if (firing[neuronIdx]) conn.flash = 1.0;
-    const c = conn.flash;  // cyan = activation flowing
-    const y = weight;       // yellow = output weight magnitude
+    const c = conn.flash;
+    const y = weight;
 
     // CMYK→RGB with M=0, K=0
     const cr = 1 - c;
@@ -265,28 +313,42 @@ export function updateReadoutCharts(
     conn.flash *= flashDecay;
     if (conn.flash < 0.01) conn.flash = 0;
 
-    // Position: projected neuron -> chart right edge
+    // Projected neuron position
     _projected.set(
       nodePositions[neuronIdx * 3],
       nodePositions[neuronIdx * 3 + 1],
       nodePositions[neuronIdx * 3 + 2],
     );
     _projected.project(worldCamera);
-
     const sx = (_projected.x + 1) / 2 * w;
     const sy = (_projected.y + 1) / 2 * h;
 
-    const anchorX = MARGIN + CHART_WIDTH;
-    const anchorY = (h - MARGIN) + yBase - CHART_HEIGHT / 2;
+    // Anchor position (fixed per output)
+    const ay = groupY + anchorLocalY(yBase, outputIdx, nPer);
 
     const posAttr = line.geometry.getAttribute("position") as THREE.BufferAttribute;
     const pos = posAttr.array as Float32Array;
-    pos[0] = sx;
-    pos[1] = sy;
-    pos[2] = 0;
-    pos[3] = anchorX;
-    pos[4] = anchorY;
-    pos[5] = 0;
+    pos[0] = sx;  pos[1] = sy;  pos[2] = 0;
+    pos[3] = anchorX; pos[4] = ay; pos[5] = 0;
+    posAttr.needsUpdate = true;
+  }
+
+  // --- Update anchor → chart-edge write lines ---
+  for (const { readout, outputIdx, line } of charts.writeLines) {
+    const yBase = charts.yBases[readout];
+
+    // Anchor (fixed Y)
+    const ay = groupY + anchorLocalY(yBase, outputIdx, nPer);
+
+    // Chart edge at current trace Y value
+    const tracePositions = charts.traces[readout][outputIdx].positions;
+    const traceY = tracePositions[(BUFFER_LEN - 1) * 3 + 1]; // group-local
+    const edgeY = groupY + traceY;
+
+    const posAttr = line.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const pos = posAttr.array as Float32Array;
+    pos[0] = anchorX;     pos[1] = ay;    pos[2] = 0;
+    pos[3] = chartRightX; pos[4] = edgeY; pos[5] = 0;
     posAttr.needsUpdate = true;
   }
 }
