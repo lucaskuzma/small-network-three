@@ -28,11 +28,12 @@ interface TraceData {
   positions: Float32Array;
 }
 
-/** One neuron→readout connection: which neuron, which readout it connects to */
 interface ConnectorInfo {
   neuronIdx: number;
   readout: number;
+  weight: number; // absolute output weight sum (Y channel)
   line: THREE.Line;
+  flash: number; // cyan flash, decays per frame
 }
 
 export interface ReadoutCharts {
@@ -50,14 +51,15 @@ export interface ReadoutCharts {
 // Find ALL neurons with non-zero output weights per readout
 // ---------------------------------------------------------------------------
 
-function findAllReadoutNeurons(net: NeuralNetwork): { neuronIdx: number; readout: number }[] {
+function findAllReadoutNeurons(net: NeuralNetwork): { neuronIdx: number; readout: number; weight: number }[] {
   const N = net.state.numNeurons;
   const numReadouts = net.state.numReadouts;
   const nPer = net.state.nOutputsPerReadout;
   const numOut = net.state.numOutputs;
   const ow = net.state.outputWeights;
 
-  const result: { neuronIdx: number; readout: number }[] = [];
+  const raw: { neuronIdx: number; readout: number; weight: number }[] = [];
+  let maxWeight = 0;
   for (let r = 0; r < numReadouts; r++) {
     const colStart = r * nPer;
     const colEnd = colStart + nPer;
@@ -67,11 +69,16 @@ function findAllReadoutNeurons(net: NeuralNetwork): { neuronIdx: number; readout
         sum += Math.abs(ow[i * numOut + c]);
       }
       if (sum > 0) {
-        result.push({ neuronIdx: i, readout: r });
+        raw.push({ neuronIdx: i, readout: r, weight: sum });
+        if (sum > maxWeight) maxWeight = sum;
       }
     }
   }
-  return result;
+  // Normalize weights to [0, 1]
+  if (maxWeight > 0) {
+    for (const entry of raw) entry.weight /= maxWeight;
+  }
+  return raw;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,20 +154,27 @@ export function createReadoutCharts(net: NeuralNetwork): ReadoutCharts {
   const neuronReadoutPairs = findAllReadoutNeurons(net);
 
   const connectors: ConnectorInfo[] = [];
-  for (const { neuronIdx, readout } of neuronReadoutPairs) {
+  for (const { neuronIdx, readout, weight } of neuronReadoutPairs) {
     const geo = new THREE.BufferGeometry();
-    const pos = new Float32Array(6);
-    const attr = new THREE.BufferAttribute(pos, 3);
-    attr.setUsage(THREE.DynamicDrawUsage);
-    geo.setAttribute("position", attr);
+    const posArr = new Float32Array(6);
+    const posAttr = new THREE.BufferAttribute(posArr, 3);
+    posAttr.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute("position", posAttr);
+
+    // Per-vertex color (same CMYK scheme as network edges)
+    const colArr = new Float32Array(6);
+    const colAttr = new THREE.BufferAttribute(colArr, 3);
+    colAttr.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute("color", colAttr);
+
     const mat = new THREE.LineBasicMaterial({
-      color: 0x666666,
+      vertexColors: true,
       transparent: true,
-      opacity: 0.08,
+      opacity: 0.15,
     });
     const line = new THREE.Line(geo, mat);
     hudScene.add(line);
-    connectors.push({ neuronIdx, readout, line });
+    connectors.push({ neuronIdx, readout, weight, line, flash: 0 });
     disposables.push({ geo, mat });
   }
 
@@ -200,10 +214,12 @@ export function updateReadoutCharts(
   worldCamera: THREE.PerspectiveCamera,
   nodePositions: Float32Array,
   pushData: boolean,
+  flashDecay: number = 0.85,
 ): void {
   const numReadouts = net.state.numReadouts;
   const nPer = net.state.nOutputsPerReadout;
   const outputs = net.state.outputs;
+  const firing = net.state.firing;
   const h = charts.camera.top;
 
   if (pushData) {
@@ -224,11 +240,32 @@ export function updateReadoutCharts(
     }
   }
 
-  // Update all connector lines
+  // Update all connector lines (position + CMYK color)
   const w = charts.camera.right;
-  for (const { neuronIdx, readout, line } of charts.connectors) {
+  for (const conn of charts.connectors) {
+    const { neuronIdx, readout, weight, line } = conn;
     const yBase = charts.yBases[readout];
 
+    // Fire flash: set to 1 when source neuron fires, decay each frame
+    if (firing[neuronIdx]) conn.flash = 1.0;
+    const c = conn.flash;  // cyan = activation flowing
+    const y = weight;       // yellow = output weight magnitude
+
+    // CMYK→RGB with M=0, K=0
+    const cr = 1 - c;
+    const cg = 1;
+    const cb = 1 - y;
+
+    const colAttr = line.geometry.getAttribute("color") as THREE.BufferAttribute;
+    const colors = colAttr.array as Float32Array;
+    colors[0] = cr; colors[1] = cg; colors[2] = cb;
+    colors[3] = cr; colors[4] = cg; colors[5] = cb;
+    colAttr.needsUpdate = true;
+
+    conn.flash *= flashDecay;
+    if (conn.flash < 0.01) conn.flash = 0;
+
+    // Position: projected neuron -> chart right edge
     _projected.set(
       nodePositions[neuronIdx * 3],
       nodePositions[neuronIdx * 3 + 1],
@@ -239,20 +276,17 @@ export function updateReadoutCharts(
     const sx = (_projected.x + 1) / 2 * w;
     const sy = (_projected.y + 1) / 2 * h;
 
-    // Anchor at right edge of chart, vertical midpoint
     const anchorX = MARGIN + CHART_WIDTH;
     const anchorY = (h - MARGIN) + yBase - CHART_HEIGHT / 2;
 
-    const attr = line.geometry.getAttribute("position") as THREE.BufferAttribute;
-    const pos = attr.array as Float32Array;
-
+    const posAttr = line.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const pos = posAttr.array as Float32Array;
     pos[0] = sx;
     pos[1] = sy;
     pos[2] = 0;
     pos[3] = anchorX;
     pos[4] = anchorY;
     pos[5] = 0;
-
-    attr.needsUpdate = true;
+    posAttr.needsUpdate = true;
   }
 }

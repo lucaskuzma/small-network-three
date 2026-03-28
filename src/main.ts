@@ -124,7 +124,7 @@ function animate() {
   }
 
   updateColors(viz, net, params.flashDecay);
-  updateReadoutCharts(charts, net, viz.camera, viz.nodePositions, params.playing);
+  updateReadoutCharts(charts, net, viz.camera, viz.nodePositions, params.playing, params.flashDecay);
   viz.controls.update();
 
   // Pass 1: main 3D scene
