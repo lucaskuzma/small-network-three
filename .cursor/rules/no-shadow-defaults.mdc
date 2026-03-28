@@ -1,0 +1,31 @@
+---
+description: Do not shadow global default constants with method parameter defaults
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# No Shadow Defaults
+
+When a module-level constant defines a default value (e.g. `DEFAULT_INTER_MODULE_FACTOR = 0.1`), **never** redeclare a different default on a method parameter. The caller has to trace the call stack to discover which value is actually used — that's a bug waiting to happen.
+
+```python
+# ❌ BAD — shadows DEFAULT_INTER_MODULE_FACTOR (0.1) with a silent 1.0
+DEFAULT_INTER_MODULE_FACTOR = 0.1
+
+def randomize_weights(self, inter_module_factor: float = 1.0):
+    ...
+
+# ✅ GOOD — callers that need it must pass it explicitly; no ambiguity
+def randomize_weights(self, inter_module_factor: Optional[float] = None):
+    if num_modules > 1 and inter_module_factor is None:
+        raise ValueError("inter_module_factor is required when num_modules > 1")
+
+# ✅ ALSO GOOD — uses the actual global constant as the default
+def random(cls, inter_module_factor: float = DEFAULT_INTER_MODULE_FACTOR):
+    ...
+```
+
+**Rules:**
+- If the parameter is always required in context, take no default and let it fail loud.
+- If the parameter is only relevant in some configurations, default to `None` and validate.
+- If you genuinely want a default, reference the global constant — never hardcode a second value.

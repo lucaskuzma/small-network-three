@@ -1,0 +1,12 @@
+---
+description: Always use the project .venv for Python tooling
+alwaysApply: true
+---
+
+# Virtual Environment
+
+This project uses a local virtual environment at `.venv/`.
+
+- Run Python via `.venv/bin/python`
+- Install packages via `.venv/bin/pip install <package>`
+- Never use system Python or `pip3 install` globally
