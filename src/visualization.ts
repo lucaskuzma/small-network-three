@@ -467,19 +467,24 @@ const _tmpColor = new THREE.Color();
 export function updateColors(
   viz: NetworkVisualization,
   net: NeuralNetwork,
+  darkMode: boolean,
 ): void {
   const N = net.numNeurons;
   const activations = net.activations;
   const refCounters = net.refractoryCounters;
   const refPeriods = net.refractionPeriods;
 
-  // Nodes: RGB = (1-C, 1-M, 1)  C=refractory flash, M=activation
+  // Nodes: dark → RGB = (1-C, 1-M, 1), light → RGB = (C, M, 0)
   for (let i = 0; i < N; i++) {
     const period = refPeriods[i];
     const c = period > 0 ? refCounters[i] / period : 0;
     const m = activations[i];
 
-    _tmpColor.setRGB(1 - c, 1 - m, 1);
+    if (darkMode) {
+      _tmpColor.setRGB(1 - c, 1 - m, 1);
+    } else {
+      _tmpColor.setRGB(c, m, 0);
+    }
     viz.nodeMesh.setColorAt(i, _tmpColor);
   }
 
@@ -487,7 +492,7 @@ export function updateColors(
     viz.nodeMesh.instanceColor.needsUpdate = true;
   }
 
-  // Edges: RGB = (1-C, 1-M, 1-Y)  C=source refractory flash, M=source activation, Y=weight
+  // Edges: dark → RGB = (1-C, 1-M, 1-Y), light → RGB = (C, M, Y)
   const colorAttr = viz.edgeLineSegments.geometry.getAttribute(
     "color",
   ) as THREE.BufferAttribute;
@@ -504,9 +509,9 @@ export function updateColors(
     const c = period > 0 ? refCounters[src] / period : 0;
     const y = eWeights[e];
 
-    const r = 1 - c;
-    const g = 1 - activations[src];
-    const b = 1 - y;
+    const r = darkMode ? 1 - c : c;
+    const g = darkMode ? 1 - activations[src] : activations[src];
+    const b = darkMode ? 1 - y : y;
 
     const base = e * stride;
     for (let s = 0; s < S; s++) {

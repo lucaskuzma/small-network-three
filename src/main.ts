@@ -1,3 +1,4 @@
+import * as THREE from "three";
 import GUI from "lil-gui";
 import { NeuralNetwork, DEFAULT_PARAMS } from "./network.ts";
 import { createVisualization, updateColors } from "./visualization.ts";
@@ -29,6 +30,7 @@ const params = {
   ...DEFAULT_PARAMS,
 
   // Visualization
+  darkMode: true,
   edgeWeightThreshold: 0.05,
   flatNodes: true,
   bloom: false,
@@ -54,12 +56,22 @@ function rebuild() {
   syncVisualParams();
 }
 
+function applyTheme() {
+  const dark = params.darkMode;
+  viz.scene.background = new THREE.Color(dark ? 0x111111 : 0xffffff);
+  document.body.style.background = dark ? "#111" : "#fff";
+  for (const mat of charts.borderMaterials) {
+    mat.color.set(dark ? 0x444444 : 0xbbbbbb);
+  }
+}
+
 function syncVisualParams() {
   viz.setFlatNodes(params.flatNodes);
   viz.bloomPass.enabled = params.bloom;
   viz.bloomPass.strength = params.bloomStrength;
   viz.bloomPass.radius = params.bloomRadius;
   viz.bloomPass.threshold = params.bloomThreshold;
+  applyTheme();
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +184,10 @@ function buildGUI() {
 
   const visual = gui.addFolder("Visual");
   visual
+    .add(params, "darkMode")
+    .name("Dark mode")
+    .onChange(applyTheme);
+  visual
     .add(params, "flatNodes")
     .name("Flat nodes")
     .onChange(() => viz.setFlatNodes(params.flatNodes));
@@ -221,7 +237,7 @@ function animate() {
     }
   }
 
-  updateColors(viz, net);
+  updateColors(viz, net, params.darkMode);
   viz.updateNodeBillboard();
   updateReadoutCharts(
     charts,
@@ -229,6 +245,7 @@ function animate() {
     viz.camera,
     viz.nodePositions,
     params.playing,
+    params.darkMode,
   );
   viz.controls.update();
 

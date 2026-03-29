@@ -53,6 +53,7 @@ export interface ReadoutCharts {
   yBases: number[];
   group: THREE.Group;
   nPerReadout: number;
+  borderMaterials: THREE.LineBasicMaterial[];
   resize(w: number, h: number): void;
   dispose(): void;
 }
@@ -121,6 +122,7 @@ export function createReadoutCharts(net: NeuralNetwork): ReadoutCharts {
   const traces: TraceData[][] = [];
   const yBases: number[] = [];
   const disposables: { geo: THREE.BufferGeometry; mat: THREE.Material }[] = [];
+  const borderMaterials: THREE.LineBasicMaterial[] = [];
 
   for (let r = 0; r < numReadouts; r++) {
     const yBase = -r * (CHART_HEIGHT + CHART_GAP);
@@ -142,6 +144,7 @@ export function createReadoutCharts(net: NeuralNetwork): ReadoutCharts {
       opacity: 0.5,
     });
     group.add(new THREE.Line(borderGeo, borderMat));
+    borderMaterials.push(borderMat);
     disposables.push({ geo: borderGeo, mat: borderMat });
 
     // Traces
@@ -234,6 +237,7 @@ export function createReadoutCharts(net: NeuralNetwork): ReadoutCharts {
     yBases,
     group,
     nPerReadout: nPer,
+    borderMaterials,
     resize,
     dispose() {
       for (const { geo, mat } of disposables) {
@@ -256,6 +260,7 @@ export function updateReadoutCharts(
   worldCamera: THREE.PerspectiveCamera,
   nodePositions: Float32Array,
   pushData: boolean,
+  darkMode: boolean,
 ): void {
   const numReadouts = net.numReadouts;
   const nPer = charts.nPerReadout;
@@ -298,10 +303,9 @@ export function updateReadoutCharts(
     const c = period > 0 ? refCounters[neuronIdx] / period : 0;
     const y = weight;
 
-    // RGB = (1-C, 1-M, 1-Y)  C=refractory flash, M=source activation, Y=weight
-    const cr = 1 - c;
-    const cg = 1 - net.activations[neuronIdx];
-    const cb = 1 - y;
+    const cr = darkMode ? 1 - c : c;
+    const cg = darkMode ? 1 - net.activations[neuronIdx] : net.activations[neuronIdx];
+    const cb = darkMode ? 1 - y : y;
 
     const colAttr = line.geometry.getAttribute("color") as THREE.BufferAttribute;
     const colors = colAttr.array as Float32Array;
