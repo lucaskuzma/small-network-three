@@ -15,6 +15,7 @@ import {
 let net: NeuralNetwork;
 let viz: ReturnType<typeof createVisualization>;
 let charts: ReadoutCharts;
+let gui: GUI;
 let step = 0;
 let lastPulseTime = 0;
 
@@ -30,7 +31,7 @@ const params = {
   ...DEFAULT_PARAMS,
 
   // Visualization
-  darkMode: true,
+  darkMode: false,
   edgeWeightThreshold: 0.05,
   flatNodes: true,
   bloom: false,
@@ -62,6 +63,9 @@ function applyTheme() {
   document.body.style.background = dark ? "#111" : "#fff";
   for (const mat of charts.borderMaterials) {
     mat.color.set(dark ? 0x444444 : 0xbbbbbb);
+  }
+  if (gui) {
+    gui.domElement.classList.toggle("light-mode", !dark);
   }
 }
 
@@ -101,7 +105,8 @@ function onNumNeuronsChange() {
 // ---------------------------------------------------------------------------
 
 function buildGUI() {
-  const gui = new GUI({ title: "Small Network" });
+  gui = new GUI({ title: "Small Network" });
+  gui.domElement.classList.toggle("light-mode", !params.darkMode);
 
   const sim = gui.addFolder("Simulation");
   sim.add(params, "playing").name("Play");
