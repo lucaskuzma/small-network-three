@@ -45,7 +45,7 @@ export const DEFAULT_PARAMS: NetworkParams = {
   dt: 0.05,
   tauMin: 1.0,
   tauMax: 5.0,
-  biasScale: 0.5,
+  biasScale: 0.1,
 };
 
 // ---------------------------------------------------------------------------
