@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import GUI from "lil-gui";
-import { NeuralNetwork, DEFAULT_PARAMS } from "./network.ts";
+import { NeuralNetwork, DEFAULT_PARAMS, type NetworkMode } from "./network.ts";
 import { createVisualization, updateColors } from "./visualization.ts";
 import {
   createReadoutCharts,
@@ -115,6 +115,18 @@ function buildGUI() {
   sim.add(params, "ticksPerFrame", 1, 20, 1).name("Ticks / frame");
 
   const network = gui.addFolder("Network");
+
+  // Mode-conditional control visibility
+  type ModeController = ReturnType<typeof network.add>;
+  const spikingOnly: ModeController[] = [];
+  const ctrnnOnly: ModeController[] = [];
+
+  function syncModeVisibility() {
+    const isCtrnn = params.mode === 'ctrnn';
+    for (const c of spikingOnly) c.show(!isCtrnn);
+    for (const c of ctrnnOnly) c.show(isCtrnn);
+  }
+
   network.add(params, "seed").name("Seed").disable();
   network
     .add(params, "numNeurons", 16, 512, 1)
@@ -141,33 +153,68 @@ function buildGUI() {
     .name("Weight scale")
     .onChange(onWeightParamChange);
   network
-    .add(params, "activationLeak", 0.8, 1, 0.01)
-    .name("Act. leak")
-    .onChange(() => net.updateParams({ activationLeak: params.activationLeak }));
-  network
-    .add(params, "refractionLeak", 0.3, 1, 0.01)
-    .name("Refrac. leak")
-    .onChange(() => net.updateParams({ refractionLeak: params.refractionLeak }));
-  network
-    .add(params, "outputDecay", 0.3, 1, 0.01)
-    .name("Output decay")
-    .onChange(() => net.updateParams({ outputDecay: params.outputDecay }));
-  network
-    .add(params, "refractionPeriod", 1, 96, 1)
-    .name("Refrac. period")
-    .onChange(() =>
-      net.updateParams({ refractionPeriod: params.refractionPeriod }),
-    );
-  network
-    .add(params, "refractionVariation", 0, 100, 1)
-    .name("Refrac. var.")
-    .onChange(() =>
-      net.updateParams({ refractionVariation: params.refractionVariation }),
-    );
-  network
     .add(params, "edgeWeightThreshold", 0, 0.3, 0.01)
     .name("Edge threshold")
     .onChange(() => viz.rebuildEdges(net, params.edgeWeightThreshold));
+
+  network
+    .add(params, "mode", ['spiking', 'ctrnn'] as NetworkMode[])
+    .name("Mode")
+    .onChange((mode: NetworkMode) => {
+      net.updateParams({ mode });
+      net.resetState();
+      net.kickstart();
+      syncModeVisibility();
+    });
+
+  // Spiking-only controls
+  spikingOnly.push(
+    network
+      .add(params, "activationLeak", 0.8, 1, 0.01)
+      .name("Act. leak")
+      .onChange(() => net.updateParams({ activationLeak: params.activationLeak })),
+    network
+      .add(params, "refractionLeak", 0.3, 1, 0.01)
+      .name("Refrac. leak")
+      .onChange(() => net.updateParams({ refractionLeak: params.refractionLeak })),
+    network
+      .add(params, "outputDecay", 0.3, 1, 0.01)
+      .name("Output decay")
+      .onChange(() => net.updateParams({ outputDecay: params.outputDecay })),
+    network
+      .add(params, "refractionPeriod", 1, 96, 1)
+      .name("Refrac. period")
+      .onChange(() =>
+        net.updateParams({ refractionPeriod: params.refractionPeriod }),
+      ),
+    network
+      .add(params, "refractionVariation", 0, 100, 1)
+      .name("Refrac. var.")
+      .onChange(() =>
+        net.updateParams({ refractionVariation: params.refractionVariation }),
+      ),
+  );
+
+  // CTRNN-only controls
+  ctrnnOnly.push(
+    network
+      .add(params, "dt", 0.005, 0.2, 0.005)
+      .name("dt")
+      .onChange(() => net.updateParams({ dt: params.dt })),
+    network
+      .add(params, "tauMin", 0.1, 10, 0.1)
+      .name("Tau min")
+      .onChange(() => net.updateParams({ tauMin: params.tauMin })),
+    network
+      .add(params, "tauMax", 0.5, 20, 0.5)
+      .name("Tau max")
+      .onChange(() => net.updateParams({ tauMax: params.tauMax })),
+    network
+      .add(params, "biasScale", 0, 2, 0.05)
+      .name("Bias scale")
+      .onChange(() => net.updateParams({ biasScale: params.biasScale })),
+  );
+
   network
     .add(
       {
@@ -186,6 +233,8 @@ function buildGUI() {
       "layout",
     )
     .name("Layout");
+
+  syncModeVisibility();
 
   const visual = gui.addFolder("Visual");
   visual
@@ -233,10 +282,11 @@ function animate() {
       const interval = 60_000 / params.bpm;
       if (now - lastPulseTime >= interval) {
         lastPulseTime = now;
+        const strength = params.mode === 'ctrnn' ? 0.3 : 1.0;
         if (params.numModules > 1) {
-          net.manualActivateMostWeightedPerModule(1.0);
+          net.manualActivateMostWeightedPerModule(strength);
         } else {
-          net.manualActivateMostWeighted(1.0);
+          net.manualActivateMostWeighted(strength);
         }
       }
     }

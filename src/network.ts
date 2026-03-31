@@ -8,20 +8,30 @@ const OUTPUT_SCALE = 0.3;
 // Params
 // ---------------------------------------------------------------------------
 
+export type NetworkMode = 'spiking' | 'ctrnn';
+
 export interface NetworkParams {
+  mode: NetworkMode;
   numNeurons: number;
   numModules: number;
   interModuleFactor: number;
   sparsity: number;
   weightScale: number;
+  // Spiking-specific
   activationLeak: number;
   refractionLeak: number;
   outputDecay: number;
   refractionPeriod: number;
   refractionVariation: number;
+  // CTRNN-specific
+  dt: number;
+  tauMin: number;
+  tauMax: number;
+  biasScale: number;
 }
 
 export const DEFAULT_PARAMS: NetworkParams = {
+  mode: 'spiking',
   numNeurons: DEFAULT_NUM_READOUTS * DEFAULT_N_OUTPUTS_PER_READOUT * 17, // 255
   numModules: 3,
   interModuleFactor: 0.5,
@@ -32,6 +42,10 @@ export const DEFAULT_PARAMS: NetworkParams = {
   outputDecay: 0.75,
   refractionPeriod: 2,
   refractionVariation: 62,
+  dt: 0.05,
+  tauMin: 1.0,
+  tauMax: 5.0,
+  biasScale: 0.5,
 };
 
 // ---------------------------------------------------------------------------
@@ -76,6 +90,8 @@ export class NeuralNetwork {
   readonly baseRefractionVar: Float64Array;
   readonly baseOutputMagnitude: Float64Array;
   readonly outputSparsityRank: Float64Array;
+  readonly baseTauRank: Float64Array;
+  readonly baseBias: Float64Array;
 
   // Derived — recomputed when params change
   readonly effectiveWeights: Float64Array;
@@ -84,6 +100,8 @@ export class NeuralNetwork {
   readonly thresholds: Float64Array;
   readonly thresholdsCurrent: Float64Array;
   readonly refractionPeriods: Int32Array;
+  readonly taus: Float64Array;
+  readonly biases: Float64Array;
 
   // Simulation state
   readonly activations: Float64Array;
@@ -109,6 +127,8 @@ export class NeuralNetwork {
     this.baseRefractionVar = new Float64Array(M);
     this.baseOutputMagnitude = new Float64Array(M * K);
     this.outputSparsityRank = new Float64Array(M * K);
+    this.baseTauRank = new Float64Array(M);
+    this.baseBias = new Float64Array(M);
 
     this.effectiveWeights = new Float64Array(M * M);
     this.moduleAssignments = new Int32Array(M);
@@ -116,6 +136,8 @@ export class NeuralNetwork {
     this.thresholds = new Float64Array(M);
     this.thresholdsCurrent = new Float64Array(M);
     this.refractionPeriods = new Int32Array(M);
+    this.taus = new Float64Array(M);
+    this.biases = new Float64Array(M);
 
     this.activations = new Float64Array(M);
     this.firing = new Uint8Array(M);
@@ -159,7 +181,16 @@ export class NeuralNetwork {
     for (let i = 0; i < M; i++) this.baseRefractionVar[i] = rng();
     for (let i = 0; i < M * K; i++) this.baseOutputMagnitude[i] = rng();
     for (let i = 0; i < M * K; i++) this.outputSparsityRank[i] = rng();
-
+    for (let i = 0; i < M; i++) this.baseTauRank[i] = rng();
+    for (let i = 0; i < M; i++) {
+      const u1 = rng();
+      const u2 = rng();
+      this.baseBias[i] = clip(
+        Math.sqrt(-2 * Math.log(u1 || 1e-30)) * Math.cos(2 * Math.PI * u2),
+        -1,
+        1,
+      );
+    }
   }
 
   // -- Derived recomputation -------------------------------------------------
@@ -170,6 +201,8 @@ export class NeuralNetwork {
     this.recomputeOutputWeights();
     this.recomputeThresholds();
     this.recomputeRefractionPeriods();
+    this.recomputeTaus();
+    this.recomputeBiases();
   }
 
   private recomputeModules(): void {
@@ -236,6 +269,20 @@ export class NeuralNetwork {
     }
   }
 
+  private recomputeTaus(): void {
+    const { tauMin, tauMax } = this.params;
+    for (let i = 0; i < MAX_NEURONS; i++) {
+      this.taus[i] = tauMin + this.baseTauRank[i] * (tauMax - tauMin);
+    }
+  }
+
+  private recomputeBiases(): void {
+    const { biasScale } = this.params;
+    for (let i = 0; i < MAX_NEURONS; i++) {
+      this.biases[i] = this.baseBias[i] * biasScale;
+    }
+  }
+
   // -- State management ------------------------------------------------------
 
   resetState(): void {
@@ -246,10 +293,20 @@ export class NeuralNetwork {
   }
 
   kickstart(): void {
-    if (this.params.numModules > 1) {
+    if (this.params.mode === 'ctrnn') {
+      this.kickstartCTRNN();
+    } else if (this.params.numModules > 1) {
       this.manualActivateMostWeightedPerModule(1.0);
     } else {
       this.manualActivateMostWeighted(1.0);
+    }
+  }
+
+  private kickstartCTRNN(): void {
+    const N = this.numNeurons;
+    const rng = mulberry32(this.seed + 777);
+    for (let i = 0; i < N; i++) {
+      this.activations[i] = (rng() - 0.5) * 0.2;
     }
   }
 
@@ -278,13 +335,27 @@ export class NeuralNetwork {
     if ("refractionPeriod" in changes || "refractionVariation" in changes) {
       this.recomputeRefractionPeriods();
     }
+    if ("tauMin" in changes || "tauMax" in changes) {
+      this.recomputeTaus();
+    }
+    if ("biasScale" in changes) {
+      this.recomputeBiases();
+    }
 
     return { weightsChanged, numNeuronsChanged: this.numNeurons !== oldN };
   }
 
   // -- Tick ------------------------------------------------------------------
 
-  tick(_step: number): void {
+  tick(step: number): void {
+    if (this.params.mode === 'ctrnn') {
+      this.tickCTRNN();
+    } else {
+      this.tickSpiking(step);
+    }
+  }
+
+  private tickSpiking(_step: number): void {
     const N = this.numNeurons;
     const M = MAX_NEURONS;
 
@@ -357,10 +428,44 @@ export class NeuralNetwork {
     }
   }
 
+  private tickCTRNN(): void {
+    const N = this.numNeurons;
+    const M = MAX_NEURONS;
+    const dt = this.params.dt;
+
+    for (let i = 0; i < N; i++) {
+      let input = 0;
+      const base = i * M;
+      for (let j = 0; j < N; j++) {
+        input += this.effectiveWeights[base + j]
+               * Math.tanh(this.activations[j] + this.biases[j]);
+      }
+      this.activations[i] += (dt / this.taus[i])
+                            * (-this.activations[i] + input);
+    }
+
+    const K = this.numOutputs;
+    for (let k = 0; k < K; k++) this.outputs[k] = 0;
+    for (let i = 0; i < N; i++) {
+      const a = Math.tanh(this.activations[i]);
+      const base = i * K;
+      for (let k = 0; k < K; k++) {
+        this.outputs[k] += this.outputWeights[base + k] * a;
+      }
+    }
+    for (let k = 0; k < K; k++) {
+      this.outputs[k] = (Math.tanh(this.outputs[k]) + 1) / 2;
+    }
+  }
+
   // -- Manual activation -----------------------------------------------------
 
   manualActivate(idx: number, value: number): void {
-    this.activations[idx] = clip(this.activations[idx] + value, 0, 1);
+    if (this.params.mode === 'ctrnn') {
+      this.activations[idx] += value;
+    } else {
+      this.activations[idx] = clip(this.activations[idx] + value, 0, 1);
+    }
   }
 
   manualActivateMostWeighted(value: number): number {

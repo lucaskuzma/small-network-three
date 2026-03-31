@@ -471,28 +471,41 @@ export function updateColors(
 ): void {
   const N = net.numNeurons;
   const activations = net.activations;
-  const refCounters = net.refractoryCounters;
-  const refPeriods = net.refractionPeriods;
+  const isCtrnn = net.params.mode === 'ctrnn';
 
-  // Nodes: dark → RGB = (1-C, 1-M, 1), light → RGB = (C, M, 0)
-  for (let i = 0; i < N; i++) {
-    const period = refPeriods[i];
-    const c = period > 0 ? refCounters[i] / period : 0;
-    const m = activations[i];
-
-    if (darkMode) {
-      _tmpColor.setRGB(1 - c, 1 - m, 1);
-    } else {
-      _tmpColor.setRGB(c, m, 0);
+  if (isCtrnn) {
+    // CTRNN nodes: diverging blue (negative) → neutral → red (positive)
+    for (let i = 0; i < N; i++) {
+      const v = Math.tanh(activations[i]);
+      const pos = Math.max(0, v);
+      const neg = Math.max(0, -v);
+      if (darkMode) {
+        _tmpColor.setRGB(0.15 + pos * 0.85, 0.15 * (1 - Math.abs(v)), 0.15 + neg * 0.85);
+      } else {
+        _tmpColor.setRGB(pos, 0.05 * (1 - Math.abs(v)), neg);
+      }
+      viz.nodeMesh.setColorAt(i, _tmpColor);
     }
-    viz.nodeMesh.setColorAt(i, _tmpColor);
+  } else {
+    const refCounters = net.refractoryCounters;
+    const refPeriods = net.refractionPeriods;
+    for (let i = 0; i < N; i++) {
+      const period = refPeriods[i];
+      const c = period > 0 ? refCounters[i] / period : 0;
+      const m = activations[i];
+      if (darkMode) {
+        _tmpColor.setRGB(1 - c, 1 - m, 1);
+      } else {
+        _tmpColor.setRGB(c, m, 0);
+      }
+      viz.nodeMesh.setColorAt(i, _tmpColor);
+    }
   }
 
   if (viz.nodeMesh.instanceColor) {
     viz.nodeMesh.instanceColor.needsUpdate = true;
   }
 
-  // Edges: dark → RGB = (1-C, 1-M, 1-Y), light → RGB = (C, M, Y)
   const colorAttr = viz.edgeLineSegments.geometry.getAttribute(
     "color",
   ) as THREE.BufferAttribute;
@@ -503,25 +516,49 @@ export function updateColors(
   const S = viz.edgeSegsPerEdge;
   const stride = S * 2 * 3;
 
-  for (let e = 0; e < numEdges; e++) {
-    const src = eSources[e];
-    const period = refPeriods[src];
-    const c = period > 0 ? refCounters[src] / period : 0;
-    const y = eWeights[e];
+  if (isCtrnn) {
+    for (let e = 0; e < numEdges; e++) {
+      const src = eSources[e];
+      const v = Math.tanh(activations[src]);
+      const intensity = Math.abs(v);
+      const y = eWeights[e];
 
-    const r = darkMode ? 1 - c : c;
-    const g = darkMode ? 1 - activations[src] : activations[src];
-    const b = darkMode ? 1 - y : y;
+      const pos = Math.max(0, v);
+      const neg = Math.max(0, -v);
+      const r = darkMode ? 0.15 + pos * 0.85 : pos;
+      const g = darkMode ? 0.15 * (1 - intensity) : 0.05 * (1 - intensity);
+      const b = darkMode ? 0.15 + neg * 0.85 : neg;
 
-    const base = e * stride;
-    for (let s = 0; s < S; s++) {
-      const ci = base + s * 6;
-      colors[ci] = r;
-      colors[ci + 1] = g;
-      colors[ci + 2] = b;
-      colors[ci + 3] = r;
-      colors[ci + 4] = g;
-      colors[ci + 5] = b;
+      const rr = r * (0.3 + 0.7 * y);
+      const gg = g * (0.3 + 0.7 * y);
+      const bb = b * (0.3 + 0.7 * y);
+
+      const base = e * stride;
+      for (let s = 0; s < S; s++) {
+        const ci = base + s * 6;
+        colors[ci] = rr;     colors[ci + 1] = gg; colors[ci + 2] = bb;
+        colors[ci + 3] = rr; colors[ci + 4] = gg; colors[ci + 5] = bb;
+      }
+    }
+  } else {
+    const refCounters = net.refractoryCounters;
+    const refPeriods = net.refractionPeriods;
+    for (let e = 0; e < numEdges; e++) {
+      const src = eSources[e];
+      const period = refPeriods[src];
+      const c = period > 0 ? refCounters[src] / period : 0;
+      const y = eWeights[e];
+
+      const r = darkMode ? 1 - c : c;
+      const g = darkMode ? 1 - activations[src] : activations[src];
+      const b = darkMode ? 1 - y : y;
+
+      const base = e * stride;
+      for (let s = 0; s < S; s++) {
+        const ci = base + s * 6;
+        colors[ci] = r;     colors[ci + 1] = g; colors[ci + 2] = b;
+        colors[ci + 3] = r; colors[ci + 4] = g; colors[ci + 5] = b;
+      }
     }
   }
 

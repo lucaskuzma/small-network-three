@@ -265,8 +265,7 @@ export function updateReadoutCharts(
   const numReadouts = net.numReadouts;
   const nPer = charts.nPerReadout;
   const outputs = net.outputs;
-  const refCounters = net.refractoryCounters;
-  const refPeriods = net.refractionPeriods;
+  const isCtrnn = net.params.mode === 'ctrnn';
   const h = charts.camera.top;
   const w = charts.camera.right;
   const groupY = h - MARGIN; // group's screen-space Y origin
@@ -299,13 +298,24 @@ export function updateReadoutCharts(
     const { neuronIdx, readout, outputIdx, weight, line } = conn;
     const yBase = charts.yBases[readout];
 
-    const period = refPeriods[neuronIdx];
-    const c = period > 0 ? refCounters[neuronIdx] / period : 0;
-    const y = weight;
-
-    const cr = darkMode ? 1 - c : c;
-    const cg = darkMode ? 1 - net.activations[neuronIdx] : net.activations[neuronIdx];
-    const cb = darkMode ? 1 - y : y;
+    let cr: number, cg: number, cb: number;
+    if (isCtrnn) {
+      const v = Math.tanh(net.activations[neuronIdx]);
+      const pos = Math.max(0, v);
+      const neg = Math.max(0, -v);
+      cr = darkMode ? 0.15 + pos * 0.85 : pos;
+      cg = darkMode ? 0.15 * (1 - Math.abs(v)) : 0.05 * (1 - Math.abs(v));
+      cb = darkMode ? 0.15 + neg * 0.85 : neg;
+    } else {
+      const refCounters = net.refractoryCounters;
+      const refPeriods = net.refractionPeriods;
+      const period = refPeriods[neuronIdx];
+      const c = period > 0 ? refCounters[neuronIdx] / period : 0;
+      const y = weight;
+      cr = darkMode ? 1 - c : c;
+      cg = darkMode ? 1 - net.activations[neuronIdx] : net.activations[neuronIdx];
+      cb = darkMode ? 1 - y : y;
+    }
 
     const colAttr = line.geometry.getAttribute("color") as THREE.BufferAttribute;
     const colors = colAttr.array as Float32Array;
