@@ -202,7 +202,7 @@ function buildGUI() {
       .name("dt")
       .onChange(() => net.updateParams({ dt: params.dt })),
     network
-      .add(params, "tauMin", 0.1, 4, 0.05)
+      .add(params, "tauMin", 0.1, 4, 0.01)
       .name("Tau min")
       .onChange(() => {
         if (params.tauMin > params.tauMax) {
@@ -212,7 +212,7 @@ function buildGUI() {
         net.updateParams({ tauMin: params.tauMin, tauMax: params.tauMax });
       }),
     network
-      .add(params, "tauMax", 0.1, 6, 0.05)
+      .add(params, "tauMax", 0.1, 6, 0.01)
       .name("Tau max")
       .onChange(() => {
         if (params.tauMax < params.tauMin) {
