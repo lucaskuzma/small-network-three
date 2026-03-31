@@ -96,7 +96,7 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
     this.dataR = new Float32Array(0);
     this.bufferLength = 0;
 
-    // Per-grain arrays (set via messages)
+    // Per-grain arrays
     this.positions = new Float32Array(MAX_GRAINS);
     this.volumes = new Float32Array(MAX_GRAINS);
 
@@ -114,6 +114,10 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
           const pos = e.data.positions;
           for (let i = 0; i < pos.length && i < MAX_GRAINS; i++) {
             this.positions[i] = pos[i];
+          }
+          // Randomize initial phase so grains don't all start aligned
+          for (let i = 0; i < this.grainCount; i++) {
+            this.grains[i].smoothOffset = Math.random() * this.grains[i].length;
           }
           break;
         }
@@ -150,8 +154,6 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
     const maxGrainLength = Math.min(MAX_SIZE, bufLen);
     const baseLength = Math.max(441, Math.floor(size * maxGrainLength));
     const baseDelay = Math.floor(spread * MAX_SIZE);
-    const maxRamp = Math.floor(baseLength / 2);
-    const baseRamp = Math.floor(ramp * maxRamp);
 
     const n = this.grainCount;
     if (n <= 0) {
@@ -179,7 +181,11 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
 
         if (grain.atCycleBoundary) {
           const bufferIndex = this.positions[g] * (bufLen - 1);
-          grain.resample(bufLen, bufferIndex, baseLength, baseDelay, baseRamp);
+          // +g samples dephases grains deterministically
+          const grainLength = baseLength + g;
+          const maxRamp = Math.floor(grainLength / 2);
+          const grainRamp = Math.floor(ramp * maxRamp);
+          grain.resample(bufLen, bufferIndex, grainLength, baseDelay, grainRamp);
         }
 
         grain._sampleL = 0;
