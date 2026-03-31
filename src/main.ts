@@ -198,17 +198,29 @@ function buildGUI() {
   // CTRNN-only controls
   ctrnnOnly.push(
     network
-      .add(params, "dt", 0.005, 0.2, 0.005)
+      .add(params, "dt", 0.005, 0.3, 0.005)
       .name("dt")
       .onChange(() => net.updateParams({ dt: params.dt })),
     network
-      .add(params, "tauMin", 0.1, 10, 0.1)
+      .add(params, "tauMin", 0.1, 4, 0.05)
       .name("Tau min")
-      .onChange(() => net.updateParams({ tauMin: params.tauMin })),
+      .onChange(() => {
+        if (params.tauMin > params.tauMax) {
+          params.tauMax = params.tauMin;
+          gui.controllersRecursive().forEach((c) => c.updateDisplay());
+        }
+        net.updateParams({ tauMin: params.tauMin, tauMax: params.tauMax });
+      }),
     network
-      .add(params, "tauMax", 0.5, 20, 0.5)
+      .add(params, "tauMax", 0.1, 6, 0.05)
       .name("Tau max")
-      .onChange(() => net.updateParams({ tauMax: params.tauMax })),
+      .onChange(() => {
+        if (params.tauMax < params.tauMin) {
+          params.tauMin = params.tauMax;
+          gui.controllersRecursive().forEach((c) => c.updateDisplay());
+        }
+        net.updateParams({ tauMin: params.tauMin, tauMax: params.tauMax });
+      }),
     network
       .add(params, "biasScale", 0, 2, 0.05)
       .name("Bias scale")
