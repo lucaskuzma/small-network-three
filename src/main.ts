@@ -7,6 +7,7 @@ import {
   updateReadoutCharts,
   type ReadoutCharts,
 } from "./charts.ts";
+import { createAudioEngine } from "./audio.ts";
 
 // ---------------------------------------------------------------------------
 // State
@@ -18,6 +19,7 @@ let charts: ReadoutCharts;
 let gui: GUI;
 let step = 0;
 let lastPulseTime = 0;
+const audio = createAudioEngine();
 
 const params = {
   // Simulation
@@ -29,6 +31,13 @@ const params = {
   // Network (seed + decomposed params)
   seed: Math.floor(Math.random() * 0x7fffffff),
   ...DEFAULT_PARAMS,
+
+  // Audio
+  audioOn: false,
+  grainSize: 0.1,
+  grainSpread: 0,
+  grainRamp: 0.5,
+  masterVolume: 0.8,
 
   // Visualization
   darkMode: false,
@@ -54,6 +63,7 @@ function rebuild() {
   viz = createVisualization(net, document.body, params.edgeWeightThreshold);
   charts = createReadoutCharts(net);
 
+  audio.configure(net.numNeurons, viz.nodePositions);
   syncVisualParams();
 }
 
@@ -98,6 +108,7 @@ function onNumNeuronsChange() {
   viz.rebuildEdges(net, params.edgeWeightThreshold);
   charts.dispose();
   charts = createReadoutCharts(net);
+  audio.configure(net.numNeurons, viz.nodePositions);
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +252,12 @@ function buildGUI() {
     .name("Randomize weights");
   network
     .add(
-      { layout: () => viz.reLayout(net, params.edgeWeightThreshold) },
+      {
+        layout: () => {
+          viz.reLayout(net, params.edgeWeightThreshold);
+          audio.configure(net.numNeurons, viz.nodePositions);
+        },
+      },
       "layout",
     )
     .name("Layout");
@@ -275,6 +291,62 @@ function buildGUI() {
     .add(params, "bloomThreshold", 0, 1, 0.05)
     .name("Threshold")
     .onChange(() => (viz.bloomPass.threshold = params.bloomThreshold));
+
+  // --- Audio ---
+  const audioFolder = gui.addFolder("Audio");
+
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = "audio/*";
+  fileInput.style.display = "none";
+  document.body.appendChild(fileInput);
+
+  const audioStatus = { file: "No file loaded" };
+  const fileLabel = audioFolder.add(audioStatus, "file").name("File").disable();
+
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    audio.loadFile(file).then(() => {
+      audioStatus.file = file.name;
+      fileLabel.updateDisplay();
+    });
+  });
+
+  audioFolder
+    .add({ load: () => fileInput.click() }, "load")
+    .name("Load audio");
+  audioFolder
+    .add(params, "audioOn")
+    .name("Audio on")
+    .onChange(async (on: boolean) => {
+      if (on) {
+        await audio.start();
+        audio.setParam("size", params.grainSize);
+        audio.setParam("spread", params.grainSpread);
+        audio.setParam("ramp", params.grainRamp);
+        audio.setParam("masterVolume", params.masterVolume);
+        audio.configure(net.numNeurons, viz.nodePositions);
+      } else {
+        await audio.stop();
+      }
+    });
+  audioFolder
+    .add(params, "masterVolume", 0, 1, 0.05)
+    .name("Volume")
+    .onChange(() => audio.setParam("masterVolume", params.masterVolume));
+  audioFolder
+    .add(params, "grainSize", 0, 1, 0.05)
+    .name("Grain size")
+    .onChange(() => audio.setParam("size", params.grainSize));
+  audioFolder
+    .add(params, "grainRamp", 0, 1, 0.05)
+    .name("Grain ramp")
+    .onChange(() => audio.setParam("ramp", params.grainRamp));
+  audioFolder
+    .add(params, "grainSpread", 0, 1, 0.05)
+    .name("Grain spread")
+    .onChange(() => audio.setParam("spread", params.grainSpread));
 }
 
 // ---------------------------------------------------------------------------
@@ -304,6 +376,7 @@ function animate() {
     }
   }
 
+  audio.updateVolumes(net);
   updateColors(viz, net, params.darkMode);
   viz.updateNodePositions(net);
   updateReadoutCharts(
