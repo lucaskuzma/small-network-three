@@ -305,12 +305,12 @@ function animate() {
   }
 
   updateColors(viz, net, params.darkMode);
-  viz.updateNodeBillboard();
+  viz.updateNodePositions(net);
   updateReadoutCharts(
     charts,
     net,
     viz.camera,
-    viz.nodePositions,
+    viz.renderedPositions,
     params.playing,
     params.darkMode,
   );

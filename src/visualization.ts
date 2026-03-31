@@ -14,6 +14,7 @@ import { type NeuralNetwork, MAX_NEURONS, mulberry32 } from "./network.ts";
 
 const CURVE_SEGMENTS = 8;
 const CURVE_AMOUNT = 0.3;
+const ACTIVATION_DISPLACEMENT = 8;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,13 +28,15 @@ export interface NetworkVisualization {
   composer: EffectComposer;
   bloomPass: UnrealBloomPass;
   nodePositions: Float32Array;
+  renderedPositions: Float32Array;
   nodeMesh: THREE.InstancedMesh;
   flatNodes: boolean;
   edgeLineSegments: THREE.LineSegments;
   edgeSegsPerEdge: number;
   edgeSources: Uint32Array;
+  edgeTargets: Uint32Array;
   edgeWeights: Float32Array;
-  updateNodeBillboard(): void;
+  updateNodePositions(net: NeuralNetwork): void;
   setFlatNodes(flat: boolean): void;
   setNodeCount(n: number): void;
   rebuildEdges(net: NeuralNetwork, edgeWeightThreshold: number): void;
@@ -147,6 +150,7 @@ interface EdgeArrays {
   positionArr: Float32Array;
   colorArr: Float32Array;
   sources: Uint32Array;
+  targets: Uint32Array;
   weights: Float32Array;
   numEdges: number;
 }
@@ -184,6 +188,7 @@ function buildEdgeArrays(
   const positionArr = new Float32Array(numEdges * vertsPerEdge * 3);
   const colorArr = new Float32Array(numEdges * vertsPerEdge * 3);
   const sources = new Uint32Array(numEdges);
+  const targets = new Uint32Array(numEdges);
   const weights = new Float32Array(numEdges);
 
   // Second pass: fill geometry
@@ -195,6 +200,7 @@ function buildEdgeArrays(
       if (Math.abs(w) <= edgeWeightThreshold) continue;
 
       sources[e] = i;
+      targets[e] = j;
       weights[e] = Math.abs(w);
 
       _a.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
@@ -254,7 +260,7 @@ function buildEdgeArrays(
     }
   }
 
-  return { positionArr, colorArr, sources, weights, numEdges };
+  return { positionArr, colorArr, sources, targets, weights, numEdges };
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +319,8 @@ export function createVisualization(
 
   // --- Layout (computed once for all MAX_NEURONS) ---
   const positions = computeLayout(net);
+  const renderedPositions = new Float32Array(MAX_NEURONS * 3);
+  renderedPositions.set(positions);
 
   // --- Nodes ---
   let flat = true;
@@ -323,12 +331,12 @@ export function createVisualization(
   // --- Edges ---
   const S = CURVE_SEGMENTS;
   let edgeData = buildEdgeArrays(net, positions, edgeWeightThreshold);
+  let restEdgePositions = edgeData.positionArr.slice();
 
   let edgeGeo = new THREE.BufferGeometry();
-  edgeGeo.setAttribute(
-    "position",
-    new THREE.BufferAttribute(edgeData.positionArr, 3),
-  );
+  const edgePosAttr = new THREE.BufferAttribute(edgeData.positionArr, 3);
+  edgePosAttr.setUsage(THREE.DynamicDrawUsage);
+  edgeGeo.setAttribute("position", edgePosAttr);
   const edgeColorAttr = new THREE.BufferAttribute(edgeData.colorArr, 3);
   edgeColorAttr.setUsage(THREE.DynamicDrawUsage);
   edgeGeo.setAttribute("color", edgeColorAttr);
@@ -362,15 +370,90 @@ export function createVisualization(
     composer,
     bloomPass,
     nodePositions: positions,
+    renderedPositions,
     nodeMesh,
     flatNodes: flat,
     edgeLineSegments,
     edgeSegsPerEdge: S,
     edgeSources: edgeData.sources,
+    edgeTargets: edgeData.targets,
     edgeWeights: edgeData.weights,
 
-    updateNodeBillboard() {
-      if (flat) billboardInstances(nodeMesh, positions, camera);
+    updateNodePositions(netRef: NeuralNetwork) {
+      const N = netRef.numNeurons;
+      const isCtrnn = netRef.params.mode === 'ctrnn';
+      const activations = netRef.activations;
+
+      for (let i = 0; i < N; i++) {
+        const px = positions[i * 3];
+        const py = positions[i * 3 + 1];
+        const pz = positions[i * 3 + 2];
+        const dist = Math.sqrt(px * px + py * py + pz * pz);
+        const a = isCtrnn
+          ? Math.abs(Math.tanh(activations[i]))
+          : activations[i];
+
+        if (dist > 0.001) {
+          const s = a * ACTIVATION_DISPLACEMENT / dist;
+          renderedPositions[i * 3] = px - px * s;
+          renderedPositions[i * 3 + 1] = py - py * s;
+          renderedPositions[i * 3 + 2] = pz - pz * s;
+        } else {
+          renderedPositions[i * 3] = px;
+          renderedPositions[i * 3 + 1] = py;
+          renderedPositions[i * 3 + 2] = pz;
+        }
+      }
+
+      // --- Update node instance matrices ---
+      if (flat) _dummy.quaternion.copy(camera.quaternion);
+      else _dummy.quaternion.identity();
+
+      for (let i = 0; i < N; i++) {
+        _dummy.position.set(
+          renderedPositions[i * 3],
+          renderedPositions[i * 3 + 1],
+          renderedPositions[i * 3 + 2],
+        );
+        _dummy.updateMatrix();
+        nodeMesh.setMatrixAt(i, _dummy.matrix);
+      }
+      nodeMesh.instanceMatrix.needsUpdate = true;
+
+      // --- Shift edge vertices by blended source/target displacement ---
+      const eSources = viz.edgeSources;
+      const eTargets = viz.edgeTargets;
+      const numEdges = eSources.length;
+      const posAttr = edgeLineSegments.geometry.getAttribute(
+        "position",
+      ) as THREE.BufferAttribute;
+      const edgePos = posAttr.array as Float32Array;
+      const stride = S * 6;
+
+      for (let e = 0; e < numEdges; e++) {
+        const si = eSources[e];
+        const ti = eTargets[e];
+        const sdx = renderedPositions[si * 3]     - positions[si * 3];
+        const sdy = renderedPositions[si * 3 + 1] - positions[si * 3 + 1];
+        const sdz = renderedPositions[si * 3 + 2] - positions[si * 3 + 2];
+        const tdx = renderedPositions[ti * 3]     - positions[ti * 3];
+        const tdy = renderedPositions[ti * 3 + 1] - positions[ti * 3 + 1];
+        const tdz = renderedPositions[ti * 3 + 2] - positions[ti * 3 + 2];
+
+        const base = e * stride;
+        for (let seg = 0; seg < S; seg++) {
+          const t0 = seg / S;
+          const t1 = (seg + 1) / S;
+          const vi = base + seg * 6;
+          edgePos[vi]     = restEdgePositions[vi]     + sdx * (1 - t0) + tdx * t0;
+          edgePos[vi + 1] = restEdgePositions[vi + 1] + sdy * (1 - t0) + tdy * t0;
+          edgePos[vi + 2] = restEdgePositions[vi + 2] + sdz * (1 - t0) + tdz * t0;
+          edgePos[vi + 3] = restEdgePositions[vi + 3] + sdx * (1 - t1) + tdx * t1;
+          edgePos[vi + 4] = restEdgePositions[vi + 4] + sdy * (1 - t1) + tdy * t1;
+          edgePos[vi + 5] = restEdgePositions[vi + 5] + sdz * (1 - t1) + tdz * t1;
+        }
+      }
+      posAttr.needsUpdate = true;
     },
 
     setFlatNodes(newFlat: boolean) {
@@ -424,12 +507,12 @@ export function createVisualization(
       edgeGeo.dispose();
 
       edgeData = buildEdgeArrays(netRef, positions, threshold);
+      restEdgePositions = edgeData.positionArr.slice();
 
       edgeGeo = new THREE.BufferGeometry();
-      edgeGeo.setAttribute(
-        "position",
-        new THREE.BufferAttribute(edgeData.positionArr, 3),
-      );
+      const newPosAttr = new THREE.BufferAttribute(edgeData.positionArr, 3);
+      newPosAttr.setUsage(THREE.DynamicDrawUsage);
+      edgeGeo.setAttribute("position", newPosAttr);
       const colAttr = new THREE.BufferAttribute(edgeData.colorArr, 3);
       colAttr.setUsage(THREE.DynamicDrawUsage);
       edgeGeo.setAttribute("color", colAttr);
@@ -439,6 +522,7 @@ export function createVisualization(
 
       viz.edgeLineSegments = edgeLineSegments;
       viz.edgeSources = edgeData.sources;
+      viz.edgeTargets = edgeData.targets;
       viz.edgeWeights = edgeData.weights;
     },
 
