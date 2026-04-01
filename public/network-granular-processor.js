@@ -60,7 +60,7 @@ class Grain {
     return Math.floor(this.smoothOffset) === 0;
   }
 
-  resample(bufferLength, bufferIndex, grainLength, grainDelay, grainRamp) {
+  updateParams(bufferLength, bufferIndex, grainLength, grainDelay, grainRamp) {
     this.index = Math.floor(bufferIndex) % bufferLength;
     if (this.index < 0) this.index += bufferLength;
 
@@ -192,7 +192,7 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
           const grainLength = baseLength + g;
           const maxRamp = Math.floor(grainLength / 2);
           const grainRamp = Math.floor(ramp * maxRamp);
-          grain.resample(bufLen, bufferIndex, grainLength, baseDelay, grainRamp);
+          grain.updateParams(bufLen, bufferIndex, grainLength, baseDelay, grainRamp);
         }
 
         grain._sampleL = 0;
