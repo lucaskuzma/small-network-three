@@ -99,6 +99,10 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
     // Per-grain arrays
     this.positions = new Float32Array(MAX_GRAINS);
     this.volumes = new Float32Array(MAX_GRAINS);
+    this.smoothVolumes = new Float32Array(MAX_GRAINS);
+
+    // One-pole low-pass coefficient (~5ms time constant)
+    this.smoothCoeff = 1 - Math.exp(-1 / (sampleRate * 0.005));
 
     this.port.onmessage = (e) => {
       switch (e.data.type) {
@@ -171,17 +175,20 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
     }
     const amp = activeCount > 0 ? 1 / Math.sqrt(activeCount) : 0;
 
+    const coeff = this.smoothCoeff;
+
     for (let s = 0; s < outL.length; s++) {
       let sumL = 0;
       let sumR = 0;
 
       for (let g = 0; g < n; g++) {
         const grain = this.grains[g];
-        const vol = this.volumes[g];
+
+        this.smoothVolumes[g] += coeff * (this.volumes[g] - this.smoothVolumes[g]);
+        const vol = this.smoothVolumes[g];
 
         if (grain.atCycleBoundary) {
           const bufferIndex = this.positions[g] * (bufLen - 1);
-          // +g samples dephases grains deterministically
           const grainLength = baseLength + g;
           const maxRamp = Math.floor(grainLength / 2);
           const grainRamp = Math.floor(ramp * maxRamp);
