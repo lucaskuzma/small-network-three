@@ -122,7 +122,7 @@ function buildGUI() {
   const sim = gui.addFolder("Simulation");
   sim.add(params, "playing").name("Play");
   sim.add(params, "pulse").name("Pulse");
-  sim.add(params, "bpm", 30, 300, 1).name("BPM");
+  sim.add(params, "bpm", 1, 300, 1).name("BPM");
   sim.add(params, "ticksPerFrame", 1, 20, 1).name("Ticks / frame");
 
   const network = gui.addFolder("Network");
@@ -405,11 +405,7 @@ function animate() {
       if (now - lastPulseTime >= interval) {
         lastPulseTime = now;
         const strength = params.mode === 'ctrnn' ? 0.3 : 1.0;
-        if (params.numModules > 1) {
-          net.manualActivateMostWeightedPerModule(strength);
-        } else {
-          net.manualActivateMostWeighted(strength);
-        }
+        net.manualActivateMostWeighted(strength);
       }
     }
   }
