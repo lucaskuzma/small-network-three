@@ -4,7 +4,7 @@ import { type NeuralNetwork, MAX_NEURONS, mulberry32 } from "./network.ts";
 // Types
 // ---------------------------------------------------------------------------
 
-type AudioParamName = "size" | "spread" | "ramp" | "masterVolume" | "pitchBias";
+type AudioParamName = "size" | "spread" | "ramp" | "masterVolume" | "pitchBias" | "activationOffset";
 
 export interface AudioEngine {
   /** Resume AudioContext and register worklet (first call only). */
