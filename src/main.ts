@@ -63,7 +63,7 @@ function rebuild() {
   viz = createVisualization(net, document.body, params.edgeWeightThreshold);
   charts = createReadoutCharts(net);
 
-  audio.configure(net.numNeurons, viz.nodePositions);
+  audio.configure(net);
   syncVisualParams();
 }
 
@@ -108,7 +108,7 @@ function onNumNeuronsChange() {
   viz.rebuildEdges(net, params.edgeWeightThreshold);
   charts.dispose();
   charts = createReadoutCharts(net);
-  audio.configure(net.numNeurons, viz.nodePositions);
+  audio.configure(net);
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +255,7 @@ function buildGUI() {
       {
         layout: () => {
           viz.reLayout(net, params.edgeWeightThreshold);
-          audio.configure(net.numNeurons, viz.nodePositions);
+          audio.configure(net);
         },
       },
       "layout",
@@ -326,7 +326,7 @@ function buildGUI() {
         audio.setParam("spread", params.grainSpread);
         audio.setParam("ramp", params.grainRamp);
         audio.setParam("masterVolume", params.masterVolume);
-        audio.configure(net.numNeurons, viz.nodePositions);
+        audio.configure(net);
       } else {
         await audio.stop();
       }
@@ -347,6 +347,44 @@ function buildGUI() {
     .add(params, "grainSpread", 0, 1, 0.05)
     .name("Grain spread")
     .onChange(() => audio.setParam("spread", params.grainSpread));
+}
+
+// ---------------------------------------------------------------------------
+// Screen-X projection for audio stereo panning
+// ---------------------------------------------------------------------------
+
+const _vpMatrix = new THREE.Matrix4();
+const _v4 = new THREE.Vector4();
+const _panPositions = new Float32Array(512);
+
+function updateAudioPan() {
+  const N = net.numNeurons;
+  const rp = viz.renderedPositions;
+
+  _vpMatrix.multiplyMatrices(viz.camera.projectionMatrix, viz.camera.matrixWorldInverse);
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+
+  for (let i = 0; i < N; i++) {
+    _v4.set(rp[i * 3], rp[i * 3 + 1], rp[i * 3 + 2], 1);
+    _v4.applyMatrix4(_vpMatrix);
+    const ndcX = _v4.x / _v4.w;
+    _panPositions[i] = ndcX;
+    if (ndcX < minX) minX = ndcX;
+    if (ndcX > maxX) maxX = ndcX;
+  }
+
+  const range = maxX - minX;
+  if (range > 0.0001) {
+    for (let i = 0; i < N; i++) {
+      _panPositions[i] = (_panPositions[i] - minX) / range;
+    }
+  } else {
+    for (let i = 0; i < N; i++) _panPositions[i] = 0.5;
+  }
+
+  audio.updatePan(_panPositions);
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +417,7 @@ function animate() {
   audio.updateVolumes(net);
   updateColors(viz, net, params.darkMode);
   viz.updateNodePositions(net);
+  updateAudioPan();
   updateReadoutCharts(
     charts,
     net,

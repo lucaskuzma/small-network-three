@@ -1,6 +1,6 @@
 // Network granular synthesis AudioWorkletProcessor.
 // Adapted from open-granular-js. Each grain maps to a neuron:
-// per-grain buffer position (from spatial distance) and volume (from activation).
+// per-grain buffer position (Fiedler topology), pan (screen X), volume (activation).
 
 const MAX_GRAINS = 512;
 const MAX_SIZE = 44100;
@@ -97,9 +97,12 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
     this.bufferLength = 0;
 
     // Per-grain arrays
-    this.positions = new Float32Array(MAX_GRAINS);
+    this.positions = new Float32Array(MAX_GRAINS);     // Fiedler-based buffer positions [0..1]
+    this.panPositions = new Float32Array(MAX_GRAINS);  // Screen-X stereo pan [0..1]
     this.volumes = new Float32Array(MAX_GRAINS);
     this.smoothVolumes = new Float32Array(MAX_GRAINS);
+    // Fill pan center by default
+    this.panPositions.fill(0.5);
 
     // One-pole low-pass coefficient (~5ms time constant)
     this.smoothCoeff = 1 - Math.exp(-1 / (sampleRate * 0.005));
@@ -122,6 +125,13 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
           // Randomize initial phase so grains don't all start aligned
           for (let i = 0; i < this.grainCount; i++) {
             this.grains[i].smoothOffset = Math.random() * this.grains[i].length;
+          }
+          break;
+        }
+        case "updatePan": {
+          const pan = e.data.panPositions;
+          for (let i = 0; i < pan.length && i < MAX_GRAINS; i++) {
+            this.panPositions[i] = pan[i];
           }
           break;
         }
@@ -198,8 +208,11 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
         grain._sampleL = 0;
         grain._sampleR = 0;
         grain.sample(this.dataL, this.dataR, bufLen);
-        sumL += grain._sampleL * vol;
-        sumR += grain._sampleR * vol;
+        const pan = this.panPositions[g];
+        const panL = Math.cos(pan * Math.PI * 0.5);
+        const panR = Math.sin(pan * Math.PI * 0.5);
+        sumL += grain._sampleL * vol * panL;
+        sumR += grain._sampleR * vol * panR;
       }
 
       outL[s] = sumL * amp * masterVol;
