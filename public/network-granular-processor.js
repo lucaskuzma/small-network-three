@@ -10,6 +10,7 @@ const MAX_SIZE = 44100;
 class Grain {
   constructor() {
     this.smoothOffset = 0;
+    this.rate = 1.0;
     this.length = 4410;
     this.index = 0;
     this.delay = 0;
@@ -53,14 +54,14 @@ class Grain {
       this.smoothOffset = 0;
       return;
     }
-    this.smoothOffset = (this.smoothOffset + 1) % cycleLen;
+    this.smoothOffset = (this.smoothOffset + this.rate) % cycleLen;
   }
 
   get atCycleBoundary() {
     return Math.floor(this.smoothOffset) === 0;
   }
 
-  updateParams(bufferLength, bufferIndex, grainLength, grainDelay, grainRamp) {
+  updateParams(bufferLength, bufferIndex, grainLength, grainDelay, grainRamp, rate) {
     this.index = Math.floor(bufferIndex) % bufferLength;
     if (this.index < 0) this.index += bufferLength;
 
@@ -69,6 +70,8 @@ class Grain {
 
     const maxRamp = Math.floor(this.length / 2);
     this.ramp = Math.min(Math.floor(grainRamp), maxRamp);
+
+    this.rate = rate;
   }
 }
 
@@ -82,6 +85,7 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
       { name: "spread",       defaultValue: 0,   minValue: 0, maxValue: 1, automationRate: "k-rate" },
       { name: "ramp",         defaultValue: 0.5, minValue: 0, maxValue: 1, automationRate: "k-rate" },
       { name: "masterVolume", defaultValue: 0.8, minValue: 0, maxValue: 1, automationRate: "k-rate" },
+      { name: "pitchBias",    defaultValue: 0,   minValue: 0, maxValue: 2, automationRate: "k-rate" },
     ];
   }
 
@@ -103,6 +107,10 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
     this.smoothVolumes = new Float32Array(MAX_GRAINS);
     // Fill pan center by default
     this.panPositions.fill(0.5);
+
+    // Slow-smoothed activation for pitch mapping (~3s time constant)
+    this.recentActivation = new Float32Array(MAX_GRAINS);
+    this.pitchCoeff = 1 - Math.exp(-1 / (sampleRate * 3));
 
     // One-pole low-pass coefficient (~5ms time constant)
     this.smoothCoeff = 1 - Math.exp(-1 / (sampleRate * 0.005));
@@ -163,6 +171,7 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
     const spread = this._p(parameters, "spread");
     const ramp = this._p(parameters, "ramp");
     const masterVol = this._p(parameters, "masterVolume");
+    const pitchBias = this._p(parameters, "pitchBias");
 
     const bufLen = this.bufferLength;
     const maxGrainLength = Math.min(MAX_SIZE, bufLen);
@@ -186,6 +195,7 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
     const amp = activeCount > 0 ? 1 / Math.sqrt(activeCount) : 0;
 
     const coeff = this.smoothCoeff;
+    const pCoeff = this.pitchCoeff;
 
     for (let s = 0; s < outL.length; s++) {
       let sumL = 0;
@@ -197,12 +207,15 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
         this.smoothVolumes[g] += coeff * (this.volumes[g] - this.smoothVolumes[g]);
         const vol = this.smoothVolumes[g];
 
+        this.recentActivation[g] += pCoeff * (this.volumes[g] - this.recentActivation[g]);
+
         if (grain.atCycleBoundary) {
           const bufferIndex = this.positions[g] * (bufLen - 1);
           const grainLength = baseLength + g;
           const maxRamp = Math.floor(grainLength / 2);
           const grainRamp = Math.floor(ramp * maxRamp);
-          grain.updateParams(bufLen, bufferIndex, grainLength, baseDelay, grainRamp);
+          const rate = 1 + pitchBias * this.recentActivation[g];
+          grain.updateParams(bufLen, bufferIndex, grainLength, baseDelay, grainRamp, rate);
         }
 
         grain._sampleL = 0;

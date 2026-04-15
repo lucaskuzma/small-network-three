@@ -38,6 +38,7 @@ const params = {
   grainSpread: 0,
   grainRamp: 0.5,
   masterVolume: 0.8,
+  pitchBias: 0,
 
   // Visualization
   darkMode: false,
@@ -326,6 +327,7 @@ function buildGUI() {
         audio.setParam("spread", params.grainSpread);
         audio.setParam("ramp", params.grainRamp);
         audio.setParam("masterVolume", params.masterVolume);
+        audio.setParam("pitchBias", params.pitchBias);
         audio.configure(net);
       } else {
         await audio.stop();
@@ -347,6 +349,10 @@ function buildGUI() {
     .add(params, "grainSpread", 0, 1, 0.05)
     .name("Grain spread")
     .onChange(() => audio.setParam("spread", params.grainSpread));
+  audioFolder
+    .add(params, "pitchBias", 0, 2, 0.05)
+    .name("Pitch bias")
+    .onChange(() => audio.setParam("pitchBias", params.pitchBias));
 }
 
 // ---------------------------------------------------------------------------
