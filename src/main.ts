@@ -34,12 +34,8 @@ const params = {
 
   // Audio
   audioOn: false,
-  grainSize: 0.1,
-  grainSpread: 0,
-  grainRamp: 0.5,
   masterVolume: 0.8,
-  pitchBias: 0,
-  activationOffset: 0.5,
+  actTimbre: 0,
 
   // Visualization
   darkMode: false,
@@ -296,40 +292,14 @@ function buildGUI() {
 
   // --- Audio ---
   const audioFolder = gui.addFolder("Audio");
-
-  const fileInput = document.createElement("input");
-  fileInput.type = "file";
-  fileInput.accept = "audio/*";
-  fileInput.style.display = "none";
-  document.body.appendChild(fileInput);
-
-  const audioStatus = { file: "No file loaded" };
-  const fileLabel = audioFolder.add(audioStatus, "file").name("File").disable();
-
-  fileInput.addEventListener("change", () => {
-    const file = fileInput.files?.[0];
-    if (!file) return;
-    audio.loadFile(file).then(() => {
-      audioStatus.file = file.name;
-      fileLabel.updateDisplay();
-    });
-  });
-
-  audioFolder
-    .add({ load: () => fileInput.click() }, "load")
-    .name("Load audio");
   audioFolder
     .add(params, "audioOn")
     .name("Audio on")
     .onChange(async (on: boolean) => {
       if (on) {
         await audio.start();
-        audio.setParam("size", params.grainSize);
-        audio.setParam("spread", params.grainSpread);
-        audio.setParam("ramp", params.grainRamp);
         audio.setParam("masterVolume", params.masterVolume);
-        audio.setParam("pitchBias", params.pitchBias);
-        audio.setParam("activationOffset", params.activationOffset);
+        audio.setParam("actTimbre", params.actTimbre);
         audio.configure(net);
       } else {
         await audio.stop();
@@ -340,25 +310,9 @@ function buildGUI() {
     .name("Volume")
     .onChange(() => audio.setParam("masterVolume", params.masterVolume));
   audioFolder
-    .add(params, "grainSize", 0, 1, 0.05)
-    .name("Grain size")
-    .onChange(() => audio.setParam("size", params.grainSize));
-  audioFolder
-    .add(params, "grainRamp", 0, 1, 0.05)
-    .name("Grain ramp")
-    .onChange(() => audio.setParam("ramp", params.grainRamp));
-  audioFolder
-    .add(params, "grainSpread", 0, 1, 0.05)
-    .name("Grain spread")
-    .onChange(() => audio.setParam("spread", params.grainSpread));
-  audioFolder
-    .add(params, "pitchBias", 0, 2, 0.05)
-    .name("Pitch bias")
-    .onChange(() => audio.setParam("pitchBias", params.pitchBias));
-  audioFolder
-    .add(params, "activationOffset", 0, 1, 0.05)
-    .name("Act. offset")
-    .onChange(() => audio.setParam("activationOffset", params.activationOffset));
+    .add(params, "actTimbre", 0, 1, 0.05)
+    .name("Act. timbre")
+    .onChange(() => audio.setParam("actTimbre", params.actTimbre));
 }
 
 // ---------------------------------------------------------------------------

@@ -4,25 +4,16 @@ import { type NeuralNetwork, MAX_NEURONS, mulberry32 } from "./network.ts";
 // Types
 // ---------------------------------------------------------------------------
 
-type AudioParamName = "size" | "spread" | "ramp" | "masterVolume" | "pitchBias" | "activationOffset";
+type AudioParamName = "masterVolume" | "actTimbre";
 
 export interface AudioEngine {
-  /** Resume AudioContext and register worklet (first call only). */
   start(): Promise<void>;
-  /** Suspend AudioContext. */
   stop(): Promise<void>;
-  /** Decode an audio file and send its buffer to the worklet. */
-  loadFile(file: File): Promise<void>;
-  /** Send grain count + Fiedler buffer positions to the worklet. */
   configure(net: NeuralNetwork): void;
-  /** Send normalized screen-X pan positions [0..1] to the worklet. */
   updatePan(panPositions: Float32Array): void;
-  /** Read activations from the network and send per-grain volumes to the worklet. */
   updateVolumes(net: NeuralNetwork): void;
-  /** Set a shared AudioParam on the worklet node. */
   setParam(name: AudioParamName, value: number): void;
   readonly running: boolean;
-  readonly bufferLoaded: boolean;
   dispose(): void;
 }
 
@@ -80,7 +71,6 @@ export function computeFiedlerPositions(net: NeuralNetwork): Float32Array {
     }
   }
 
-  // Normalize to [0, 1]
   let minV = Infinity, maxV = -Infinity;
   for (let i = 0; i < N; i++) {
     if (v[i] < minV) minV = v[i];
@@ -106,17 +96,15 @@ export function createAudioEngine(): AudioEngine {
   let node: AudioWorkletNode | null = null;
   let workletReady = false;
   let running = false;
-  let bufferLoaded = false;
-  let decodedBuffer: AudioBuffer | null = null;
-  let grainCount = 0;
+  let oscCount = 0;
 
   async function ensureContext(): Promise<AudioContext> {
     if (!ctx) {
       ctx = new AudioContext();
     }
     if (!workletReady) {
-      await ctx.audioWorklet.addModule("/network-granular-processor.js");
-      node = new AudioWorkletNode(ctx, "network-granular-processor", {
+      await ctx.audioWorklet.addModule("/network-oscillator-processor.js");
+      node = new AudioWorkletNode(ctx, "network-oscillator-processor", {
         numberOfInputs: 0,
         numberOfOutputs: 1,
         outputChannelCount: [2],
@@ -127,27 +115,9 @@ export function createAudioEngine(): AudioEngine {
     return ctx;
   }
 
-  function sendBuffer(audioCtx: AudioContext, buffer: AudioBuffer) {
-    if (!node) return;
-    const channels: Float32Array[] = [];
-    for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
-      channels.push(new Float32Array(buffer.getChannelData(ch)));
-    }
-    node.port.postMessage(
-      { type: "loadBuffer", channelData: channels },
-      channels.map((c) => c.buffer),
-    );
-    decodedBuffer = buffer;
-    bufferLoaded = true;
-    void audioCtx;
-  }
-
   const engine: AudioEngine = {
     get running() {
       return running;
-    },
-    get bufferLoaded() {
-      return bufferLoaded;
     },
 
     async start() {
@@ -165,32 +135,29 @@ export function createAudioEngine(): AudioEngine {
       running = false;
     },
 
-    async loadFile(file: File) {
-      const audioCtx = await ensureContext();
-      const arrayBuffer = await file.arrayBuffer();
-      const buffer = await audioCtx.decodeAudioData(arrayBuffer);
-      sendBuffer(audioCtx, buffer);
-    },
-
     configure(net: NeuralNetwork) {
-      grainCount = net.numNeurons;
+      oscCount = net.numNeurons;
       const positions = computeFiedlerPositions(net);
+      const noteNumbers = new Float32Array(oscCount);
+      for (let i = 0; i < oscCount; i++) {
+        noteNumbers[i] = 32 + Math.round(positions[i] * 63);
+      }
       if (node) {
         node.port.postMessage({
           type: "configure",
-          grainCount: grainCount,
-          positions,
+          oscCount,
+          noteNumbers,
         });
       }
     },
 
     updatePan(panPositions: Float32Array) {
-      if (!node || !running || !bufferLoaded) return;
+      if (!node || !running) return;
       node.port.postMessage({ type: "updatePan", panPositions });
     },
 
     updateVolumes(net: NeuralNetwork) {
-      if (!node || !running || !bufferLoaded) return;
+      if (!node || !running) return;
       const N = net.numNeurons;
       const isCtrnn = net.params.mode === "ctrnn";
       const activations = net.activations;
@@ -220,8 +187,6 @@ export function createAudioEngine(): AudioEngine {
       }
       workletReady = false;
       running = false;
-      bufferLoaded = false;
-      decodedBuffer = null;
     },
   };
 
