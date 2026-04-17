@@ -1,7 +1,7 @@
 // Per-neuron oscillator AudioWorkletProcessor.
 // Each neuron is a phase-accumulator oscillator:
 //   pitch = chromatic note from Fiedler topology
-//   amplitude = activation
+//   amplitude = activation (smoothed per-sample to avoid zipper noise)
 //   timbre = sine↔saw crossfade driven by smoothed activation
 //   pan = screen-X position
 
@@ -35,13 +35,20 @@ class NetworkOscillatorProcessor extends AudioWorkletProcessor {
     this.oscCount = 0;
     this.phases = new Float64Array(MAX_OSC);
     this.phaseInc = new Float32Array(MAX_OSC);
-    this.amplitudes = new Float32Array(MAX_OSC);
+
+    // Target amplitudes (set by postMessage) and smoothed (rendered)
+    this.targetAmplitudes = new Float32Array(MAX_OSC);
+    this.smoothedAmplitudes = new Float32Array(MAX_OSC);
+
     this.panL = new Float32Array(MAX_OSC);
     this.panR = new Float32Array(MAX_OSC);
     this.recentActivation = new Float32Array(MAX_OSC);
 
-    // ~3s time constant applied once per quantum
-    this.smoothCoeff = 1 - Math.exp(-128 / (sampleRate * 3));
+    // ~5ms amplitude smoothing (per-sample) — fast enough to track 60fps, smooth enough for no zipper
+    this.ampCoeff = 1 - Math.exp(-1 / (sampleRate * 0.005));
+
+    // ~3s timbre EMA applied once per quantum
+    this.timbreCoeff = 1 - Math.exp(-128 / (sampleRate * 3));
 
     this.panL.fill(Math.SQRT1_2);
     this.panR.fill(Math.SQRT1_2);
@@ -58,12 +65,13 @@ class NetworkOscillatorProcessor extends AudioWorkletProcessor {
             this.phases[i] = Math.random();
           }
           this.recentActivation.fill(0);
+          this.smoothedAmplitudes.fill(0);
           break;
         }
         case "updateVolumes": {
           const vols = e.data.volumes;
           for (let i = 0; i < vols.length && i < MAX_OSC; i++) {
-            this.amplitudes[i] = vols[i];
+            this.targetAmplitudes[i] = vols[i];
           }
           break;
         }
@@ -104,19 +112,22 @@ class NetworkOscillatorProcessor extends AudioWorkletProcessor {
 
     const masterVol = this._p(parameters, "masterVolume");
     const actTimbre = this._p(parameters, "actTimbre");
-    const sc = this.smoothCoeff;
+    const tsc = this.timbreCoeff;
+    const asc = this.ampCoeff;
     const blockLen = outL.length;
-    const amps = this.amplitudes;
+    const target = this.targetAmplitudes;
+    const smooth = this.smoothedAmplitudes;
     const pL = this.panL;
     const pR = this.panR;
+    const THRESH = 0.001;
 
-    // Per-quantum: EMA smoothing, timbre mix, count active oscillators
+    // Per-quantum: timbre EMA + count active (target OR smoothed above threshold)
     const tmix = new Float32Array(n);
     let activeCount = 0;
     for (let i = 0; i < n; i++) {
-      if (amps[i] < 0.001) continue;
+      if (target[i] < THRESH && smooth[i] < THRESH) continue;
       activeCount++;
-      this.recentActivation[i] += sc * (amps[i] - this.recentActivation[i]);
+      this.recentActivation[i] += tsc * (target[i] - this.recentActivation[i]);
       const m = this.recentActivation[i] * actTimbre;
       tmix[i] = m < 1 ? m : 1;
     }
@@ -131,8 +142,10 @@ class NetworkOscillatorProcessor extends AudioWorkletProcessor {
       let sumR = 0;
 
       for (let i = 0; i < n; i++) {
-        const amp = amps[i];
-        if (amp < 0.001) continue;
+        // Per-sample amplitude smoothing
+        smooth[i] += asc * (target[i] - smooth[i]);
+        const amp = smooth[i];
+        if (amp < THRESH) continue;
 
         let phase = phases[i];
         const sine = fastSin(phase);
