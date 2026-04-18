@@ -157,7 +157,7 @@ function buildGUI() {
     .name("Neurons")
     .onChange(onNumNeuronsChange);
   network
-    .add(params, "numModules", 1, 8, 1)
+    .add(params, "numModules", 1, 16, 1)
     .name("Modules")
     .onFinishChange(() => {
       onWeightParamChange();
@@ -173,7 +173,7 @@ function buildGUI() {
     .name("Sparsity")
     .onChange(onWeightParamChange);
   network
-    .add(params, "weightScale", 0.05, 1, 0.05)
+    .add(params, "weightScale", 0.01, 1, 0.01)
     .name("Weight scale")
     .onChange(onWeightParamChange);
   network
@@ -246,7 +246,7 @@ function buildGUI() {
         net.updateParams({ tauMin: params.tauMin, tauMax: params.tauMax });
       }),
     network
-      .add(params, "biasScale", 0, 2, 0.05)
+      .add(params, "biasScale", 0, 2, 0.01)
       .name("Bias scale")
       .onChange(() => net.updateParams({ biasScale: params.biasScale })),
   );
@@ -293,15 +293,15 @@ function buildGUI() {
     .name("Enable")
     .onChange(() => (viz.bloomPass.enabled = params.bloom));
   bloomFolder
-    .add(params, "bloomStrength", 0, 3, 0.05)
+    .add(params, "bloomStrength", 0, 3, 0.01)
     .name("Strength")
     .onChange(() => (viz.bloomPass.strength = params.bloomStrength));
   bloomFolder
-    .add(params, "bloomRadius", 0, 2, 0.05)
+    .add(params, "bloomRadius", 0, 2, 0.01)
     .name("Radius")
     .onChange(() => (viz.bloomPass.radius = params.bloomRadius));
   bloomFolder
-    .add(params, "bloomThreshold", 0, 1, 0.05)
+    .add(params, "bloomThreshold", 0, 1, 0.01)
     .name("Threshold")
     .onChange(() => (viz.bloomPass.threshold = params.bloomThreshold));
 
@@ -354,14 +354,14 @@ function buildGUI() {
       syncSynthVisibility();
     });
   audioFolder
-    .add(params, "masterVolume", 0, 1, 0.05)
+    .add(params, "masterVolume", 0, 1, 0.01)
     .name("Volume")
     .onChange(() => audio.setParam("masterVolume", params.masterVolume));
 
   // Oscillator-only
   oscOnly.push(
     audioFolder
-      .add(params, "actTimbre", 0, 1, 0.05)
+      .add(params, "actTimbre", 0, 1, 0.01)
       .name("Act. timbre")
       .onChange(() => audio.setParam("actTimbre", params.actTimbre)),
   );
@@ -391,23 +391,23 @@ function buildGUI() {
       .add({ load: () => fileInput.click() }, "load")
       .name("Load audio"),
     audioFolder
-      .add(params, "grainSize", 0, 1, 0.05)
+      .add(params, "grainSize", 0, 1, 0.01)
       .name("Grain size")
       .onChange(() => audio.setParam("size", params.grainSize)),
     audioFolder
-      .add(params, "grainRamp", 0, 1, 0.05)
+      .add(params, "grainRamp", 0, 1, 0.01)
       .name("Grain ramp")
       .onChange(() => audio.setParam("ramp", params.grainRamp)),
     audioFolder
-      .add(params, "grainSpread", 0, 1, 0.05)
+      .add(params, "grainSpread", 0, 1, 0.01)
       .name("Grain spread")
       .onChange(() => audio.setParam("spread", params.grainSpread)),
     audioFolder
-      .add(params, "pitchBias", 0, 2, 0.05)
+      .add(params, "pitchBias", 0, 2, 0.01)
       .name("Pitch bias")
       .onChange(() => audio.setParam("pitchBias", params.pitchBias)),
     audioFolder
-      .add(params, "activationOffset", 0, 1, 0.05)
+      .add(params, "activationOffset", 0, 1, 0.01)
       .name("Act. offset")
       .onChange(() => audio.setParam("activationOffset", params.activationOffset)),
   );
