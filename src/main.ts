@@ -150,7 +150,7 @@ function buildGUI() {
       charts = createReadoutCharts(net);
     });
   network
-    .add(params, "interModuleFactor", 0, 1, 0.05)
+    .add(params, "interModuleFactor", 0, 1, 0.01)
     .name("Inter-module")
     .onChange(onWeightParamChange);
   network
