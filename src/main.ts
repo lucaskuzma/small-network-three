@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import GUI from "lil-gui";
-import { NeuralNetwork, DEFAULT_PARAMS, type NetworkMode } from "./network.ts";
+import { NeuralNetwork, DEFAULT_PARAMS, MAX_NEURONS, type NetworkMode } from "./network.ts";
 import { createVisualization, updateColors } from "./visualization.ts";
 import {
   createReadoutCharts,
@@ -138,7 +138,7 @@ function buildGUI() {
 
   network.add(params, "seed").name("Seed").disable();
   network
-    .add(params, "numNeurons", 16, 512, 1)
+    .add(params, "numNeurons", 16, MAX_NEURONS, 1)
     .name("Neurons")
     .onChange(onNumNeuronsChange);
   network
@@ -154,7 +154,7 @@ function buildGUI() {
     .name("Inter-module")
     .onChange(onWeightParamChange);
   network
-    .add(params, "sparsity", 0.01, 0.5, 0.01)
+    .add(params, "sparsity", 0.01, 1, 0.01)
     .name("Sparsity")
     .onChange(onWeightParamChange);
   network
@@ -321,7 +321,7 @@ function buildGUI() {
 
 const _vpMatrix = new THREE.Matrix4();
 const _v4 = new THREE.Vector4();
-const _panPositions = new Float32Array(512);
+const _panPositions = new Float32Array(MAX_NEURONS);
 
 function updateAudioPan() {
   const N = net.numNeurons;

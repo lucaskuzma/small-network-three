@@ -5,7 +5,7 @@
 //   timbre = sine↔saw crossfade driven by smoothed activation
 //   pan = screen-X position
 
-const MAX_OSC = 512;
+const MAX_OSC = 512; // must match MAX_NEURONS in network.ts
 
 // Precomputed sine wavetable with guard point for linear interpolation
 const SINE_N = 4096;
