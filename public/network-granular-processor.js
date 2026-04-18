@@ -16,7 +16,6 @@ class Grain {
     this.panR = 1;
     this.length = 4410;
     this.index = 0;
-    this.delay = 0;
     this.ramp = 735;
     this._sampleL = 0;
     this._sampleR = 0;
@@ -25,18 +24,10 @@ class Grain {
   sample(dataL, dataR, bufferLength) {
     const offset = Math.floor(this.smoothOffset);
 
-    if (offset < this.delay) {
-      this._advance();
-      return;
-    }
-
-    const attackIndex = offset - this.delay;
-    const audibleLength = this.length - this.delay;
-
     let envelope = 1;
     if (this.ramp > 0) {
-      const attackFrac = attackIndex / this.ramp;
-      const decayFrac = (audibleLength - attackIndex) / this.ramp;
+      const attackFrac = offset / this.ramp;
+      const decayFrac = (this.length - offset) / this.ramp;
       if (attackFrac < 1) {
         envelope = attackFrac;
       } else if (decayFrac < 1) {
@@ -53,24 +44,22 @@ class Grain {
   }
 
   _advance() {
-    const cycleLen = this.length + this.delay;
-    if (cycleLen <= 0) {
+    if (this.length <= 0) {
       this.smoothOffset = 0;
       return;
     }
-    this.smoothOffset = (this.smoothOffset + this.rate) % cycleLen;
+    this.smoothOffset = (this.smoothOffset + this.rate) % this.length;
   }
 
   get atCycleBoundary() {
     return Math.floor(this.smoothOffset) === 0;
   }
 
-  updateParams(bufferLength, bufferIndex, grainLength, grainDelay, grainRamp, rate, vol, pan) {
+  updateParams(bufferLength, bufferIndex, grainLength, grainRamp, rate, vol, pan) {
     this.index = Math.floor(bufferIndex) % bufferLength;
     if (this.index < 0) this.index += bufferLength;
 
     this.length = Math.max(1, Math.floor(grainLength));
-    this.delay = Math.max(0, Math.floor(grainDelay));
 
     const maxRamp = Math.floor(this.length / 2);
     this.ramp = Math.min(Math.floor(grainRamp), maxRamp);
@@ -89,7 +78,6 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
   static get parameterDescriptors() {
     return [
       { name: "size",         defaultValue: 0.1, minValue: 0, maxValue: 1, automationRate: "k-rate" },
-      { name: "spread",       defaultValue: 0,   minValue: 0, maxValue: 1, automationRate: "k-rate" },
       { name: "ramp",         defaultValue: 0.5, minValue: 0, maxValue: 1, automationRate: "k-rate" },
       { name: "masterVolume", defaultValue: 0.8, minValue: 0, maxValue: 1, automationRate: "k-rate" },
       { name: "pitchBias",       defaultValue: 0,   minValue: 0, maxValue: 2, automationRate: "k-rate" },
@@ -171,7 +159,6 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
     if (this.bufferLength === 0) return true;
 
     const size = this._p(parameters, "size");
-    const spread = this._p(parameters, "spread");
     const ramp = this._p(parameters, "ramp");
     const masterVol = this._p(parameters, "masterVolume");
     const pitchBias = this._p(parameters, "pitchBias");
@@ -180,7 +167,6 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
     const bufLen = this.bufferLength;
     const maxGrainLength = Math.min(MAX_SIZE, bufLen);
     const baseLength = Math.max(441, Math.floor(size * maxGrainLength));
-    const baseDelay = Math.floor(spread * MAX_SIZE);
 
     const n = this.grainCount;
     if (n <= 0) {
@@ -215,7 +201,7 @@ class NetworkGranularProcessor extends AudioWorkletProcessor {
           const maxRamp = Math.floor(grainLength / 2);
           const grainRamp = Math.floor(ramp * maxRamp);
           const rate = 1 + pitchBias * this.recentActivation[g];
-          grain.updateParams(bufLen, bufferIndex, grainLength, baseDelay, grainRamp, rate, this.volumes[g], this.panPositions[g]);
+          grain.updateParams(bufLen, bufferIndex, grainLength, grainRamp, rate, this.volumes[g], this.panPositions[g]);
         }
 
         grain._sampleL = 0;

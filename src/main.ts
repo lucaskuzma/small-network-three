@@ -44,7 +44,6 @@ const params = {
   masterVolume: 0.8,
   actTimbre: 0,
   grainSize: 0.1,
-  grainSpread: 0,
   grainRamp: 0.5,
   pitchBias: 0,
   activationOffset: 0.5,
@@ -324,7 +323,6 @@ function buildGUI() {
       audio.setParam("actTimbre", params.actTimbre);
     } else {
       audio.setParam("size", params.grainSize);
-      audio.setParam("spread", params.grainSpread);
       audio.setParam("ramp", params.grainRamp);
       audio.setParam("pitchBias", params.pitchBias);
       audio.setParam("activationOffset", params.activationOffset);
@@ -398,10 +396,6 @@ function buildGUI() {
       .add(params, "grainRamp", 0, 1, 0.01)
       .name("Grain ramp")
       .onChange(() => audio.setParam("ramp", params.grainRamp)),
-    audioFolder
-      .add(params, "grainSpread", 0, 1, 0.01)
-      .name("Grain spread")
-      .onChange(() => audio.setParam("spread", params.grainSpread)),
     audioFolder
       .add(params, "pitchBias", 0, 2, 0.01)
       .name("Pitch bias")

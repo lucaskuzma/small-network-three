@@ -10,7 +10,6 @@ type AudioParamName =
   | "masterVolume"
   | "actTimbre"
   | "size"
-  | "spread"
   | "ramp"
   | "pitchBias"
   | "activationOffset";
