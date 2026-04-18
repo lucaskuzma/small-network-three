@@ -160,14 +160,24 @@ canvas {
   outline-offset: 0;
 }
 
+/* lil-gui's default reuses --focus-color (signal-cool) as the focused-input
+   background and the active-slider background, which both collide with the
+   signal-cool knob/text. Keep the widget background in these states; the
+   outline (inputs) and the fill bar (sliders) do the indicating. */
+.lil-gui input[type="text"]:focus,
+.lil-gui input[type="number"]:focus,
+.lil-gui .controller.number .slider.active {
+  background: var(--widget-color);
+}
+
 /* Buttons — medium weight per GUI typography rules. */
 .lil-gui button {
   font-family: var(--font-body);
   font-weight: var(--weight-medium);
 }
 
-/* Scrollbar thumb uses --focus-color by default, which we've set to
-   signal-cool. Override to near-black ink instead. */
+/* Scrollbar thumb — mid-grey (ink at low opacity reads as mid in both themes).
+   lil-gui's default routes this through --focus-color (signal-cool). */
 .lil-gui.root > .children::-webkit-scrollbar-thumb {
-  background: var(--ink);
+  background: color-mix(in srgb, var(--ink) 30%, transparent);
 }
