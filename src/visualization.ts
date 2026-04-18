@@ -578,7 +578,7 @@ export function updateColors(
       const c = period > 0 ? refCounters[i] / period : 0;
       const m = activations[i];
       if (darkMode) {
-        _tmpColor.setRGB(1 - c, 1 - m, 1);
+        _tmpColor.setRGB(0.08 + c * 0.92, 0.08 + m * 0.92, 0.08 + Math.max(c, m) * 0.92);
       } else {
         _tmpColor.setRGB(c, m, 0);
       }
@@ -633,9 +633,10 @@ export function updateColors(
       const c = period > 0 ? refCounters[src] / period : 0;
       const y = eWeights[e];
 
-      const r = darkMode ? 1 - c : c;
-      const g = darkMode ? 1 - activations[src] : activations[src];
-      const b = darkMode ? 1 - y : y;
+      const act = activations[src];
+      const r = darkMode ? c * 0.9 : c;
+      const g = darkMode ? act * 0.9 : act;
+      const b = darkMode ? Math.max(c, act) * 0.9 : y;
 
       const base = e * stride;
       for (let s = 0; s < S; s++) {
