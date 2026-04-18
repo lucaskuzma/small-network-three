@@ -1,3 +1,9 @@
+import "@fontsource/ibm-plex-sans/400.css";
+import "@fontsource/ibm-plex-sans/500.css";
+import "@fontsource/ibm-plex-sans/600.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "./styles.css";
+
 import * as THREE from "three";
 import GUI from "lil-gui";
 import { NeuralNetwork, DEFAULT_PARAMS, MAX_NEURONS, type NetworkMode } from "./network.ts";
@@ -71,15 +77,19 @@ function rebuild() {
   syncVisualParams();
 }
 
+const PALETTE = {
+  paper: 0xffffff,
+  paperDark: 0x00002b,
+  graphite: 0x222222,
+  graphiteDark: 0xc5ced2,
+} as const;
+
 function applyTheme() {
   const dark = params.darkMode;
-  viz.scene.background = new THREE.Color(dark ? 0x111111 : 0xffffff);
-  document.body.style.background = dark ? "#111" : "#fff";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  viz.scene.background = new THREE.Color(dark ? PALETTE.paperDark : PALETTE.paper);
   for (const mat of charts.borderMaterials) {
-    mat.color.set(dark ? 0x444444 : 0xbbbbbb);
-  }
-  if (gui) {
-    gui.domElement.classList.toggle("light-mode", !dark);
+    mat.color.set(dark ? PALETTE.graphiteDark : PALETTE.graphite);
   }
 }
 
@@ -121,7 +131,6 @@ function onNumNeuronsChange() {
 
 function buildGUI() {
   gui = new GUI({ title: "Small Network" });
-  gui.domElement.classList.toggle("light-mode", !params.darkMode);
 
   const sim = gui.addFolder("Simulation");
   sim.add(params, "playing").name("Play");

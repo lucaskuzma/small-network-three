@@ -1,0 +1,173 @@
+/* -------------------------------------------------------------------------
+ * Fonts — loaded as side-effect imports in main.ts via @fontsource
+ * ------------------------------------------------------------------------- */
+
+/* -------------------------------------------------------------------------
+ * Design tokens (from style-guide-3.md)
+ * ------------------------------------------------------------------------- */
+
+:root {
+  /* type */
+  --font-body: "IBM Plex Sans", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+
+  --size-caption: 12px;
+  --size-body: 16px;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  --lh-tight: 1.5;
+
+  /* palette — light (canonical) */
+  --ink: #00002b;
+  --graphite: #222222;
+  --paper: #ffffff;
+  --wash-cool: rgba(203, 220, 226, 0.126);
+  --wash-warm: #e2b4d7;
+  --frost: #f0feff;
+  --mute: #f2f2f2;
+  --dot: #eaeaea;
+
+  /* signals — theme-invariant inks */
+  --signal-cool: #00b7d4;
+  --signal-warm: #d94a91;
+  --signal-yellow: #ffd600;
+
+  /* space */
+  --space-2xs: 2px;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+
+  /* rules */
+  --hairline: 1px;
+  --rule: 2px;
+}
+
+[data-theme="dark"] {
+  --ink: #e8f0f5;
+  --graphite: #c5ced2;
+  --paper: #00002b;
+  --wash-cool: rgba(0, 30, 50, 0.4);
+  --wash-warm: rgba(100, 40, 80, 0.35);
+  --frost: #001a24;
+  --mute: #0a0a33;
+  --dot: #1a1a40;
+}
+
+/* -------------------------------------------------------------------------
+ * Base
+ * ------------------------------------------------------------------------- */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: var(--size-body);
+  line-height: var(--lh-tight);
+}
+
+canvas {
+  display: block;
+}
+
+/* -------------------------------------------------------------------------
+ * lil-gui skin — maps to design tokens
+ *
+ * Light is canonical. Dark flips via [data-theme="dark"] on <html>,
+ * which swaps the tokens underneath.
+ * ------------------------------------------------------------------------- */
+
+.lil-gui {
+  --background-color: var(--paper);
+  --text-color: var(--ink);
+  --title-background-color: var(--mute);
+  --title-text-color: var(--ink);
+  --widget-color: var(--mute);
+  --hover-color: var(--frost);
+  --focus-color: var(--signal-cool);
+  --number-color: var(--signal-cool);
+  --string-color: var(--signal-warm);
+
+  --font-size: var(--size-caption);
+  --input-font-size: var(--size-caption);
+  --font-family: var(--font-body);
+  --font-family-mono: var(--font-mono);
+
+  --widget-height: 24px;
+  --spacing: var(--space-xs);
+  --padding: var(--space-sm);
+  --widget-border-radius: 0;
+  --slider-knob-width: var(--rule);
+}
+
+/* Folder titles — group headers: uppercase, semibold, tracked.
+   Differentiated from rows by the --mute background alone; no rules. */
+.lil-gui .title {
+  font-family: var(--font-body);
+  font-weight: var(--weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Kill lil-gui's default cyan underline on focused titles. */
+.lil-gui .title:focus,
+.lil-gui.root > .title:focus {
+  text-decoration: none;
+  outline: none;
+}
+
+/* Label column: body type, lowercase, regular weight. */
+.lil-gui .controller > .name {
+  font-family: var(--font-body);
+  font-weight: var(--weight-regular);
+  text-transform: lowercase;
+}
+
+/* Value column: mono with tabular + slashed zero. Covers numeric inputs
+   (sliders, number fields) and text inputs (color hex, etc.). */
+.lil-gui input[type="text"],
+.lil-gui input[type="number"] {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum", "zero";
+}
+
+/* Option/dropdown display — also mono for tabular readout. */
+.lil-gui .controller.option .display {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum", "zero";
+}
+
+/* Focus indicator — 2px signal-cool outline, inputs/buttons only (not titles). */
+.lil-gui input:focus,
+.lil-gui button:focus,
+.lil-gui .controller.option .display:focus {
+  outline: var(--rule) solid var(--signal-cool);
+  outline-offset: 0;
+}
+
+/* Buttons — medium weight per GUI typography rules. */
+.lil-gui button {
+  font-family: var(--font-body);
+  font-weight: var(--weight-medium);
+}
+
+/* Scrollbar thumb uses --focus-color by default, which we've set to
+   signal-cool. Override to near-black ink instead. */
+.lil-gui.root > .children::-webkit-scrollbar-thumb {
+  background: var(--ink);
+}
