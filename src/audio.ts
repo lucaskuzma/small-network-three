@@ -4,16 +4,29 @@ import { type NeuralNetwork, MAX_NEURONS, mulberry32 } from "./network.ts";
 // Types
 // ---------------------------------------------------------------------------
 
-type AudioParamName = "masterVolume" | "actTimbre";
+export type SynthMode = "oscillator" | "granular";
+
+type AudioParamName =
+  | "masterVolume"
+  | "actTimbre"
+  | "size"
+  | "spread"
+  | "ramp"
+  | "pitchBias"
+  | "activationOffset";
 
 export interface AudioEngine {
   start(): Promise<void>;
   stop(): Promise<void>;
+  loadFile(file: File): Promise<void>;
+  setSynthMode(mode: SynthMode, net: NeuralNetwork): void;
   configure(net: NeuralNetwork): void;
   updatePan(panPositions: Float32Array): void;
   updateVolumes(net: NeuralNetwork): void;
   setParam(name: AudioParamName, value: number): void;
   readonly running: boolean;
+  readonly bufferLoaded: boolean;
+  readonly synthMode: SynthMode;
   dispose(): void;
 }
 
@@ -96,7 +109,10 @@ export function createAudioEngine(): AudioEngine {
   let node: AudioWorkletNode | null = null;
   let workletReady = false;
   let running = false;
-  let oscCount = 0;
+  let bufferLoaded = false;
+  let decodedBuffer: AudioBuffer | null = null;
+  let neuronCount = 0;
+  let mode: SynthMode = "oscillator";
 
   async function ensureContext(): Promise<AudioContext> {
     if (!ctx) {
@@ -104,24 +120,57 @@ export function createAudioEngine(): AudioEngine {
     }
     if (!workletReady) {
       await ctx.audioWorklet.addModule("/network-oscillator-processor.js");
-      node = new AudioWorkletNode(ctx, "network-oscillator-processor", {
-        numberOfInputs: 0,
-        numberOfOutputs: 1,
-        outputChannelCount: [2],
-      });
-      node.connect(ctx.destination);
+      await ctx.audioWorklet.addModule("/network-granular-processor.js");
       workletReady = true;
     }
     return ctx;
+  }
+
+  function createNode(synthMode: SynthMode) {
+    if (!ctx) return;
+    if (node) {
+      node.disconnect();
+      node = null;
+    }
+    const name = synthMode === "oscillator"
+      ? "network-oscillator-processor"
+      : "network-granular-processor";
+    node = new AudioWorkletNode(ctx, name, {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+    });
+    node.connect(ctx.destination);
+  }
+
+  function sendBuffer() {
+    if (!node || !decodedBuffer) return;
+    const channels: Float32Array[] = [];
+    for (let ch = 0; ch < decodedBuffer.numberOfChannels; ch++) {
+      channels.push(new Float32Array(decodedBuffer.getChannelData(ch)));
+    }
+    node.port.postMessage(
+      { type: "loadBuffer", channelData: channels },
+      channels.map((c) => c.buffer),
+    );
   }
 
   const engine: AudioEngine = {
     get running() {
       return running;
     },
+    get bufferLoaded() {
+      return bufferLoaded;
+    },
+    get synthMode() {
+      return mode;
+    },
 
     async start() {
       const audioCtx = await ensureContext();
+      if (!node) {
+        createNode(mode);
+      }
       if (audioCtx.state === "suspended") {
         await audioCtx.resume();
       }
@@ -135,29 +184,59 @@ export function createAudioEngine(): AudioEngine {
       running = false;
     },
 
-    configure(net: NeuralNetwork) {
-      oscCount = net.numNeurons;
-      const positions = computeFiedlerPositions(net);
-      const noteNumbers = new Float32Array(oscCount);
-      for (let i = 0; i < oscCount; i++) {
-        noteNumbers[i] = 32 + Math.round(positions[i] * 63);
+    async loadFile(file: File) {
+      const audioCtx = await ensureContext();
+      const arrayBuffer = await file.arrayBuffer();
+      const buffer = await audioCtx.decodeAudioData(arrayBuffer);
+      decodedBuffer = buffer;
+      bufferLoaded = true;
+      if (mode === "granular") {
+        sendBuffer();
       }
-      if (node) {
+    },
+
+    setSynthMode(newMode: SynthMode, net: NeuralNetwork) {
+      mode = newMode;
+      if (!ctx || !workletReady) return;
+      createNode(mode);
+      if (mode === "granular" && decodedBuffer) {
+        sendBuffer();
+      }
+      engine.configure(net);
+    },
+
+    configure(net: NeuralNetwork) {
+      neuronCount = net.numNeurons;
+      const positions = computeFiedlerPositions(net);
+      if (!node) return;
+      if (mode === "oscillator") {
+        const noteNumbers = new Float32Array(neuronCount);
+        for (let i = 0; i < neuronCount; i++) {
+          noteNumbers[i] = 32 + Math.round(positions[i] * 63);
+        }
         node.port.postMessage({
           type: "configure",
-          oscCount,
+          oscCount: neuronCount,
           noteNumbers,
+        });
+      } else {
+        node.port.postMessage({
+          type: "configure",
+          grainCount: neuronCount,
+          positions,
         });
       }
     },
 
     updatePan(panPositions: Float32Array) {
       if (!node || !running) return;
+      if (mode === "granular" && !bufferLoaded) return;
       node.port.postMessage({ type: "updatePan", panPositions });
     },
 
     updateVolumes(net: NeuralNetwork) {
       if (!node || !running) return;
+      if (mode === "granular" && !bufferLoaded) return;
       const N = net.numNeurons;
       const isCtrnn = net.params.mode === "ctrnn";
       const activations = net.activations;
@@ -187,6 +266,8 @@ export function createAudioEngine(): AudioEngine {
       }
       workletReady = false;
       running = false;
+      bufferLoaded = false;
+      decodedBuffer = null;
     },
   };
 

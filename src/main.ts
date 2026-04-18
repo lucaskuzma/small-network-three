@@ -7,7 +7,7 @@ import {
   updateReadoutCharts,
   type ReadoutCharts,
 } from "./charts.ts";
-import { createAudioEngine } from "./audio.ts";
+import { createAudioEngine, type SynthMode } from "./audio.ts";
 
 // ---------------------------------------------------------------------------
 // State
@@ -34,8 +34,14 @@ const params = {
 
   // Audio
   audioOn: false,
+  synthMode: "oscillator" as SynthMode,
   masterVolume: 0.8,
   actTimbre: 0,
+  grainSize: 0.1,
+  grainSpread: 0,
+  grainRamp: 0.5,
+  pitchBias: 0,
+  activationOffset: 0.5,
 
   // Visualization
   darkMode: false,
@@ -292,27 +298,112 @@ function buildGUI() {
 
   // --- Audio ---
   const audioFolder = gui.addFolder("Audio");
+
+  type Ctrl = ReturnType<typeof audioFolder.add>;
+  const oscOnly: Ctrl[] = [];
+  const granularOnly: Ctrl[] = [];
+
+  function syncSynthVisibility() {
+    const isOsc = params.synthMode === "oscillator";
+    for (const c of oscOnly) c.show(isOsc);
+    for (const c of granularOnly) c.show(!isOsc);
+  }
+
+  function sendActiveParams() {
+    audio.setParam("masterVolume", params.masterVolume);
+    if (params.synthMode === "oscillator") {
+      audio.setParam("actTimbre", params.actTimbre);
+    } else {
+      audio.setParam("size", params.grainSize);
+      audio.setParam("spread", params.grainSpread);
+      audio.setParam("ramp", params.grainRamp);
+      audio.setParam("pitchBias", params.pitchBias);
+      audio.setParam("activationOffset", params.activationOffset);
+    }
+  }
+
   audioFolder
     .add(params, "audioOn")
     .name("Audio on")
     .onChange(async (on: boolean) => {
       if (on) {
         await audio.start();
-        audio.setParam("masterVolume", params.masterVolume);
-        audio.setParam("actTimbre", params.actTimbre);
-        audio.configure(net);
+        audio.setSynthMode(params.synthMode, net);
+        sendActiveParams();
       } else {
         await audio.stop();
       }
     });
   audioFolder
+    .add(params, "synthMode", ["oscillator", "granular"] as SynthMode[])
+    .name("Synth mode")
+    .onChange((mode: SynthMode) => {
+      if (audio.running) {
+        audio.setSynthMode(mode, net);
+        sendActiveParams();
+      }
+      syncSynthVisibility();
+    });
+  audioFolder
     .add(params, "masterVolume", 0, 1, 0.05)
     .name("Volume")
     .onChange(() => audio.setParam("masterVolume", params.masterVolume));
-  audioFolder
-    .add(params, "actTimbre", 0, 1, 0.05)
-    .name("Act. timbre")
-    .onChange(() => audio.setParam("actTimbre", params.actTimbre));
+
+  // Oscillator-only
+  oscOnly.push(
+    audioFolder
+      .add(params, "actTimbre", 0, 1, 0.05)
+      .name("Act. timbre")
+      .onChange(() => audio.setParam("actTimbre", params.actTimbre)),
+  );
+
+  // Granular-only
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = "audio/*";
+  fileInput.style.display = "none";
+  document.body.appendChild(fileInput);
+
+  const audioStatus = { file: "No file loaded" };
+  const fileLabel = audioFolder.add(audioStatus, "file").name("File").disable();
+  granularOnly.push(fileLabel);
+
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    audio.loadFile(file).then(() => {
+      audioStatus.file = file.name;
+      fileLabel.updateDisplay();
+    });
+  });
+
+  granularOnly.push(
+    audioFolder
+      .add({ load: () => fileInput.click() }, "load")
+      .name("Load audio"),
+    audioFolder
+      .add(params, "grainSize", 0, 1, 0.05)
+      .name("Grain size")
+      .onChange(() => audio.setParam("size", params.grainSize)),
+    audioFolder
+      .add(params, "grainRamp", 0, 1, 0.05)
+      .name("Grain ramp")
+      .onChange(() => audio.setParam("ramp", params.grainRamp)),
+    audioFolder
+      .add(params, "grainSpread", 0, 1, 0.05)
+      .name("Grain spread")
+      .onChange(() => audio.setParam("spread", params.grainSpread)),
+    audioFolder
+      .add(params, "pitchBias", 0, 2, 0.05)
+      .name("Pitch bias")
+      .onChange(() => audio.setParam("pitchBias", params.pitchBias)),
+    audioFolder
+      .add(params, "activationOffset", 0, 1, 0.05)
+      .name("Act. offset")
+      .onChange(() => audio.setParam("activationOffset", params.activationOffset)),
+  );
+
+  syncSynthVisibility();
 }
 
 // ---------------------------------------------------------------------------
