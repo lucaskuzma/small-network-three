@@ -464,7 +464,7 @@ function animate() {
       const interval = 60_000 / params.bpm;
       if (now - lastPulseTime >= interval) {
         lastPulseTime = now;
-        const strength = params.mode === 'ctrnn' ? 0.3 : 1.0;
+        const strength = params.mode === 'ctrnn' ? 2.0 : 1.0;
         net.manualActivateMostWeighted(strength);
       }
     }
