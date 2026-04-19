@@ -242,7 +242,7 @@ export function createAudioEngine(): AudioEngine {
       const vols = new Float32Array(N);
       for (let i = 0; i < N; i++) {
         vols[i] = isCtrnn
-          ? Math.abs(Math.tanh(activations[i]))
+          ? (Math.tanh((Math.abs(activations[i]) - 1) * 2) + 1) * 0.5
           : activations[i];
       }
       node.port.postMessage({ type: "updateVolumes", volumes: vols });
