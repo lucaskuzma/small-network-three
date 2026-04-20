@@ -13,6 +13,7 @@ import {
   updateReadoutCharts,
   type ReadoutCharts,
 } from "./charts.ts";
+import { createPlaneChart, type PlaneChart } from "./plane-chart.ts";
 import { createAudioEngine, type SynthMode } from "./audio.ts";
 
 // ---------------------------------------------------------------------------
@@ -22,6 +23,7 @@ import { createAudioEngine, type SynthMode } from "./audio.ts";
 let net: NeuralNetwork;
 let viz: ReturnType<typeof createVisualization>;
 let charts: ReadoutCharts;
+let planeChart: PlaneChart;
 let gui: GUI;
 let step = 0;
 let lastPulseTime = 0;
@@ -56,6 +58,11 @@ const params = {
   bloomStrength: 0.2,
   bloomRadius: 0.2,
   bloomThreshold: 0.2,
+
+  // Plane readout
+  planeZ: 0,
+  planeThreshold: 48,
+  planeShape: 1,
 };
 
 // ---------------------------------------------------------------------------
@@ -63,6 +70,7 @@ const params = {
 // ---------------------------------------------------------------------------
 
 function rebuild() {
+  if (planeChart) planeChart.dispose();
   if (charts) charts.dispose();
   if (viz) viz.dispose();
 
@@ -71,9 +79,11 @@ function rebuild() {
 
   viz = createVisualization(net, document.body, params.edgeWeightThreshold);
   charts = createReadoutCharts(net);
+  planeChart = createPlaneChart(net, viz, charts);
 
   audio.configure(net);
   syncVisualParams();
+  syncPlaneZRange();
 }
 
 const PALETTE = {
@@ -89,6 +99,17 @@ function applyTheme() {
   viz.scene.background = new THREE.Color(dark ? PALETTE.paperDark : PALETTE.paper);
   for (const mat of charts.borderMaterials) {
     mat.color.set(dark ? PALETTE.graphiteDark : PALETTE.graphite);
+  }
+  if (planeChart) {
+    for (const mat of planeChart.borderMaterials) {
+      mat.color.set(dark ? PALETTE.graphiteDark : PALETTE.graphite);
+    }
+    planeChart.planeOutlineMaterial.color.set(
+      dark ? PALETTE.graphiteDark : PALETTE.graphite,
+    );
+    planeChart.planeFillMaterial.color.set(
+      dark ? PALETTE.graphiteDark : PALETTE.graphite,
+    );
   }
 }
 
@@ -119,9 +140,25 @@ function onNumNeuronsChange() {
   net.updateParams({ numNeurons: params.numNeurons });
   viz.setNodeCount(params.numNeurons);
   viz.rebuildEdges(net, params.edgeWeightThreshold);
+  planeChart.dispose();
   charts.dispose();
   charts = createReadoutCharts(net);
+  planeChart = createPlaneChart(net, viz, charts);
+  syncPlaneZRange();
+  applyTheme();
   audio.configure(net);
+}
+
+let planeZController: ReturnType<GUI["add"]> | null = null;
+
+function syncPlaneZRange() {
+  if (!planeZController || !planeChart) return;
+  const ext = planeChart.getExtent();
+  const pad = Math.max(8, (ext.maxZ - ext.minZ) * 0.1);
+  const lo = Math.floor(ext.minZ - pad);
+  const hi = Math.ceil(ext.maxZ + pad);
+  params.planeZ = Math.min(Math.max(params.planeZ, lo), hi);
+  planeZController.min(lo).max(hi).updateDisplay();
 }
 
 // ---------------------------------------------------------------------------
@@ -160,8 +197,12 @@ function buildGUI() {
     .name("Modules")
     .onFinishChange(() => {
       onWeightParamChange();
+      planeChart.dispose();
       charts.dispose();
       charts = createReadoutCharts(net);
+      planeChart = createPlaneChart(net, viz, charts);
+      syncPlaneZRange();
+      applyTheme();
     });
   network
     .add(params, "interModuleFactor", 0, 1, 0.01)
@@ -267,6 +308,8 @@ function buildGUI() {
       {
         layout: () => {
           viz.reLayout(net, params.edgeWeightThreshold);
+          planeChart.onLayoutChanged(viz.nodePositions, net.numNeurons);
+          syncPlaneZRange();
           audio.configure(net);
         },
       },
@@ -275,6 +318,14 @@ function buildGUI() {
     .name("Layout");
 
   syncModeVisibility();
+
+  const plane = gui.addFolder("Plane readout");
+  planeZController = plane.add(params, "planeZ", -100, 100, 1).name("Z");
+  plane.add(params, "planeThreshold", 2, 256, 1).name("Threshold");
+  const planeAdvanced = plane.addFolder("Advanced");
+  planeAdvanced.add(params, "planeShape", 1, 4, 0.1).name("Shape");
+  planeAdvanced.close();
+  syncPlaneZRange();
 
   const visual = gui.addFolder("Visual");
   visual
@@ -479,6 +530,17 @@ function animate() {
     net,
     viz.camera,
     viz.renderedPositions,
+    params.playing,
+    params.darkMode,
+  );
+  planeChart.update(
+    net,
+    viz.nodePositions,
+    {
+      z: params.planeZ,
+      threshold: params.planeThreshold,
+      shape: params.planeShape,
+    },
     params.playing,
     params.darkMode,
   );
