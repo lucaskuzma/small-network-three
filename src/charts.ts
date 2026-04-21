@@ -312,8 +312,9 @@ export function updateReadoutCharts(
       const period = refPeriods[neuronIdx];
       const c = period > 0 ? refCounters[neuronIdx] / period : 0;
       const y = weight;
+      const a = Math.min(1, Math.max(0, net.activations[neuronIdx]));
       cr = darkMode ? 1 - c : c;
-      cg = darkMode ? 1 - net.activations[neuronIdx] : net.activations[neuronIdx];
+      cg = darkMode ? 1 - a : a;
       cb = darkMode ? 1 - y : y;
     }
 

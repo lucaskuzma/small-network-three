@@ -8,7 +8,7 @@ const OUTPUT_SCALE = 0.3;
 // Params
 // ---------------------------------------------------------------------------
 
-export type NetworkMode = 'spiking' | 'ctrnn';
+export type NetworkMode = 'spiking' | 'ctrnn' | 'lif';
 
 export interface NetworkParams {
   mode: NetworkMode;
@@ -28,6 +28,16 @@ export interface NetworkParams {
   tauMin: number;
   tauMax: number;
   biasScale: number;
+  // LIF-specific (Adaptive LIF / LSNN-style)
+  lifDt: number;
+  lifTauMemMin: number;
+  lifTauMemMax: number;
+  lifTauAdaptMin: number;
+  lifTauAdaptMax: number;
+  lifThreshold: number;
+  lifBeta: number;
+  lifReset: number;
+  lifInputScale: number;
 }
 
 export const DEFAULT_PARAMS: NetworkParams = {
@@ -46,6 +56,15 @@ export const DEFAULT_PARAMS: NetworkParams = {
   tauMin: 1.0,
   tauMax: 5.0,
   biasScale: 0.1,
+  lifDt: 1.0,
+  lifTauMemMin: 8,
+  lifTauMemMax: 32,
+  lifTauAdaptMin: 48,
+  lifTauAdaptMax: 192,
+  lifThreshold: 1.0,
+  lifBeta: 0.5,
+  lifReset: 0.0,
+  lifInputScale: 1.0,
 };
 
 // ---------------------------------------------------------------------------
@@ -92,6 +111,7 @@ export class NeuralNetwork {
   readonly outputSparsityRank: Float64Array;
   readonly baseTauRank: Float64Array;
   readonly baseBias: Float64Array;
+  readonly baseTauAdaptRank: Float64Array;
 
   // Derived — recomputed when params change
   readonly effectiveWeights: Float64Array;
@@ -102,12 +122,15 @@ export class NeuralNetwork {
   readonly refractionPeriods: Int32Array;
   readonly taus: Float64Array;
   readonly biases: Float64Array;
+  readonly lifTauMems: Float64Array;
+  readonly lifTauAdapts: Float64Array;
 
   // Simulation state
   readonly activations: Float64Array;
   readonly firing: Uint8Array;
   readonly outputs: Float64Array;
   readonly refractoryCounters: Int32Array;
+  readonly adaptation: Float64Array;
 
   get numNeurons(): number {
     return this.params.numNeurons;
@@ -129,6 +152,7 @@ export class NeuralNetwork {
     this.outputSparsityRank = new Float64Array(M * K);
     this.baseTauRank = new Float64Array(M);
     this.baseBias = new Float64Array(M);
+    this.baseTauAdaptRank = new Float64Array(M);
 
     this.effectiveWeights = new Float64Array(M * M);
     this.moduleAssignments = new Int32Array(M);
@@ -138,11 +162,14 @@ export class NeuralNetwork {
     this.refractionPeriods = new Int32Array(M);
     this.taus = new Float64Array(M);
     this.biases = new Float64Array(M);
+    this.lifTauMems = new Float64Array(M);
+    this.lifTauAdapts = new Float64Array(M);
 
     this.activations = new Float64Array(M);
     this.firing = new Uint8Array(M);
     this.outputs = new Float64Array(K);
     this.refractoryCounters = new Int32Array(M);
+    this.adaptation = new Float64Array(M);
 
     this.randomizeWeights();
     this.recomputeDerived();
@@ -191,6 +218,7 @@ export class NeuralNetwork {
         1,
       );
     }
+    for (let i = 0; i < M; i++) this.baseTauAdaptRank[i] = rng();
   }
 
   // -- Derived recomputation -------------------------------------------------
@@ -203,6 +231,7 @@ export class NeuralNetwork {
     this.recomputeRefractionPeriods();
     this.recomputeTaus();
     this.recomputeBiases();
+    this.recomputeLIFTaus();
   }
 
   private recomputeModules(): void {
@@ -283,6 +312,15 @@ export class NeuralNetwork {
     }
   }
 
+  private recomputeLIFTaus(): void {
+    const { lifTauMemMin, lifTauMemMax, lifTauAdaptMin, lifTauAdaptMax } = this.params;
+    for (let i = 0; i < MAX_NEURONS; i++) {
+      this.lifTauMems[i] = lifTauMemMin + this.baseTauRank[i] * (lifTauMemMax - lifTauMemMin);
+      this.lifTauAdapts[i] =
+        lifTauAdaptMin + this.baseTauAdaptRank[i] * (lifTauAdaptMax - lifTauAdaptMin);
+    }
+  }
+
   // -- State management ------------------------------------------------------
 
   resetState(): void {
@@ -290,6 +328,7 @@ export class NeuralNetwork {
     this.firing.fill(0);
     this.outputs.fill(0);
     this.refractoryCounters.fill(0);
+    this.adaptation.fill(0);
   }
 
   kickstart(): void {
@@ -301,6 +340,8 @@ export class NeuralNetwork {
       this.manualActivateMostWeighted(1.0);
     }
   }
+
+  // Both `spiking` and `lif` are spike-driven; only CTRNN needs a separate path.
 
   private kickstartCTRNN(): void {
     const N = this.numNeurons;
@@ -341,6 +382,14 @@ export class NeuralNetwork {
     if ("biasScale" in changes) {
       this.recomputeBiases();
     }
+    if (
+      "lifTauMemMin" in changes ||
+      "lifTauMemMax" in changes ||
+      "lifTauAdaptMin" in changes ||
+      "lifTauAdaptMax" in changes
+    ) {
+      this.recomputeLIFTaus();
+    }
 
     return { weightsChanged, numNeuronsChanged: this.numNeurons !== oldN };
   }
@@ -350,6 +399,8 @@ export class NeuralNetwork {
   tick(step: number): void {
     if (this.params.mode === 'ctrnn') {
       this.tickCTRNN();
+    } else if (this.params.mode === 'lif') {
+      this.tickLIF();
     } else {
       this.tickSpiking(step);
     }
@@ -458,10 +509,63 @@ export class NeuralNetwork {
     }
   }
 
+  private tickLIF(): void {
+    const N = this.numNeurons;
+    const M = MAX_NEURONS;
+    const { lifDt, lifBeta, lifReset, lifThreshold, lifInputScale } = this.params;
+
+    const incoming = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      if (this.firing[i] === 0) continue;
+      const base = i * M;
+      for (let j = 0; j < N; j++) {
+        incoming[j] += this.effectiveWeights[base + j];
+      }
+    }
+
+    for (let i = 0; i < N; i++) {
+      if (this.refractoryCounters[i] === 0) {
+        this.activations[i] +=
+          (lifDt / this.lifTauMems[i]) *
+          (-this.activations[i] + lifInputScale * incoming[i]);
+      }
+      this.adaptation[i] += (lifDt / this.lifTauAdapts[i]) * (-this.adaptation[i]);
+    }
+
+    const newFiring = new Uint8Array(N);
+    for (let i = 0; i < N; i++) {
+      const effectiveTh =
+        this.thresholds[i] * lifThreshold + lifBeta * this.adaptation[i];
+      if (this.refractoryCounters[i] === 0 && this.activations[i] >= effectiveTh) {
+        newFiring[i] = 1;
+        this.activations[i] = lifReset;
+        this.adaptation[i] += 1.0;
+        this.refractoryCounters[i] = this.refractionPeriods[i];
+      }
+    }
+
+    const K = this.numOutputs;
+    const outDecay = this.params.outputDecay;
+    for (let k = 0; k < K; k++) this.outputs[k] *= outDecay;
+    for (let i = 0; i < N; i++) {
+      if (newFiring[i] === 0) continue;
+      const base = i * K;
+      for (let k = 0; k < K; k++) this.outputs[k] += this.outputWeights[base + k];
+    }
+    for (let k = 0; k < K; k++) this.outputs[k] = clip(this.outputs[k], 0, 1);
+
+    for (let i = 0; i < N; i++) {
+      this.firing[i] = newFiring[i];
+      this.refractoryCounters[i] = Math.max(0, this.refractoryCounters[i] - 1);
+    }
+  }
+
   // -- Manual activation -----------------------------------------------------
 
   manualActivate(idx: number, value: number): void {
     if (this.params.mode === 'ctrnn') {
+      this.activations[idx] += value;
+    } else if (this.params.mode === 'lif') {
       this.activations[idx] += value;
     } else {
       this.activations[idx] = clip(this.activations[idx] + value, 0, 1);

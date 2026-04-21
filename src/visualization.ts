@@ -391,7 +391,7 @@ export function createVisualization(
         const dist = Math.sqrt(px * px + py * py + pz * pz);
         const a = isCtrnn
           ? Math.abs(Math.tanh(activations[i]))
-          : activations[i];
+          : Math.min(1, Math.max(0, activations[i]));
 
         if (dist > 0.001) {
           const s = a * ACTIVATION_DISPLACEMENT / dist;
@@ -576,7 +576,7 @@ export function updateColors(
     for (let i = 0; i < N; i++) {
       const period = refPeriods[i];
       const c = period > 0 ? refCounters[i] / period : 0;
-      const m = activations[i];
+      const m = Math.min(1, Math.max(0, activations[i]));
       if (darkMode) {
         _tmpColor.setRGB(0.08 + c * 0.92, 0.08 + m * 0.92, 0.08 + Math.max(c, m) * 0.92);
       } else {
@@ -633,7 +633,7 @@ export function updateColors(
       const c = period > 0 ? refCounters[src] / period : 0;
       const y = eWeights[e];
 
-      const act = activations[src];
+      const act = Math.min(1, Math.max(0, activations[src]));
       const r = darkMode ? c * 0.9 : c;
       const g = darkMode ? act * 0.9 : act;
       const b = darkMode ? Math.max(c, act) * 0.9 : y;

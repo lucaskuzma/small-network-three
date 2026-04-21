@@ -243,7 +243,7 @@ export function createAudioEngine(): AudioEngine {
       for (let i = 0; i < N; i++) {
         vols[i] = isCtrnn
           ? (Math.tanh((Math.abs(activations[i]) - 1) * 2) + 1) * 0.5
-          : activations[i];
+          : Math.min(1, Math.max(0, activations[i]));
       }
       node.port.postMessage({ type: "updateVolumes", volumes: vols });
     },

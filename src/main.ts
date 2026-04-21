@@ -180,11 +180,13 @@ function buildGUI() {
   type ModeController = ReturnType<typeof network.add>;
   const spikingOnly: ModeController[] = [];
   const ctrnnOnly: ModeController[] = [];
+  const lifOnly: ModeController[] = [];
 
   function syncModeVisibility() {
-    const isCtrnn = params.mode === 'ctrnn';
-    for (const c of spikingOnly) c.show(!isCtrnn);
-    for (const c of ctrnnOnly) c.show(isCtrnn);
+    const mode = params.mode;
+    for (const c of spikingOnly) c.show(mode === 'spiking');
+    for (const c of ctrnnOnly) c.show(mode === 'ctrnn');
+    for (const c of lifOnly) c.show(mode === 'lif');
   }
 
   network.add(params, "seed").name("Seed").disable();
@@ -222,7 +224,7 @@ function buildGUI() {
     .onChange(() => viz.rebuildEdges(net, params.edgeWeightThreshold));
 
   network
-    .add(params, "mode", ['spiking', 'ctrnn'] as NetworkMode[])
+    .add(params, "mode", ['spiking', 'ctrnn', 'lif'] as NetworkMode[])
     .name("Mode")
     .onChange((mode: NetworkMode) => {
       net.updateParams({ mode });
@@ -289,6 +291,82 @@ function buildGUI() {
       .add(params, "biasScale", 0, 2, 0.01)
       .name("Bias scale")
       .onChange(() => net.updateParams({ biasScale: params.biasScale })),
+  );
+
+  // LIF-only controls
+  lifOnly.push(
+    network
+      .add(params, "lifDt", 0.1, 2, 0.05)
+      .name("LIF dt")
+      .onChange(() => net.updateParams({ lifDt: params.lifDt })),
+    network
+      .add(params, "lifTauMemMin", 1, 64, 0.5)
+      .name("Tau mem min")
+      .onChange(() => {
+        if (params.lifTauMemMin > params.lifTauMemMax) {
+          params.lifTauMemMax = params.lifTauMemMin;
+          gui.controllersRecursive().forEach((c) => c.updateDisplay());
+        }
+        net.updateParams({
+          lifTauMemMin: params.lifTauMemMin,
+          lifTauMemMax: params.lifTauMemMax,
+        });
+      }),
+    network
+      .add(params, "lifTauMemMax", 1, 128, 0.5)
+      .name("Tau mem max")
+      .onChange(() => {
+        if (params.lifTauMemMax < params.lifTauMemMin) {
+          params.lifTauMemMin = params.lifTauMemMax;
+          gui.controllersRecursive().forEach((c) => c.updateDisplay());
+        }
+        net.updateParams({
+          lifTauMemMin: params.lifTauMemMin,
+          lifTauMemMax: params.lifTauMemMax,
+        });
+      }),
+    network
+      .add(params, "lifTauAdaptMin", 8, 256, 1)
+      .name("Tau adapt min")
+      .onChange(() => {
+        if (params.lifTauAdaptMin > params.lifTauAdaptMax) {
+          params.lifTauAdaptMax = params.lifTauAdaptMin;
+          gui.controllersRecursive().forEach((c) => c.updateDisplay());
+        }
+        net.updateParams({
+          lifTauAdaptMin: params.lifTauAdaptMin,
+          lifTauAdaptMax: params.lifTauAdaptMax,
+        });
+      }),
+    network
+      .add(params, "lifTauAdaptMax", 8, 512, 1)
+      .name("Tau adapt max")
+      .onChange(() => {
+        if (params.lifTauAdaptMax < params.lifTauAdaptMin) {
+          params.lifTauAdaptMin = params.lifTauAdaptMax;
+          gui.controllersRecursive().forEach((c) => c.updateDisplay());
+        }
+        net.updateParams({
+          lifTauAdaptMin: params.lifTauAdaptMin,
+          lifTauAdaptMax: params.lifTauAdaptMax,
+        });
+      }),
+    network
+      .add(params, "lifThreshold", 0.01, 3, 0.01)
+      .name("Threshold")
+      .onChange(() => net.updateParams({ lifThreshold: params.lifThreshold })),
+    network
+      .add(params, "lifBeta", 0, 2, 0.01)
+      .name("Adapt. beta")
+      .onChange(() => net.updateParams({ lifBeta: params.lifBeta })),
+    network
+      .add(params, "lifReset", -1, 1, 0.01)
+      .name("V reset")
+      .onChange(() => net.updateParams({ lifReset: params.lifReset })),
+    network
+      .add(params, "lifInputScale", 0, 5, 0.01)
+      .name("Input scale")
+      .onChange(() => net.updateParams({ lifInputScale: params.lifInputScale })),
   );
 
   network
